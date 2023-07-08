@@ -1,4 +1,4 @@
-﻿//define pins
+﻿﻿//define pins
 
 
 enum switch_state {closed, sealed, unsealed};
@@ -141,18 +141,53 @@ int movement_to_switch(Movement movement, bool stop_state) {
   return 2;
 }
 
-int inputs_processing(State state, int active_scenario) {
-  static int last_signal_time;
-  static const int delay_button;
-  static const int delay_switch;
-  //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10
 
-  if (digitalRead(1) == HIGH) {
-    
+int buttons_processing(int active_scenario) {
+  static int last_signal_time = 2147483647;
+  static const int delay_button;
+  //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10. Возвращает активный сценарий.
+
+  //если есть активный сценарий, то даже не смотреть на кнопки
+  if (active_scenario != 0) {
+    return active_scenario;
   }
 
-  return active_scenario;
+  //повторить для всех трех кнопок
+  if (digitalRead(close_button_pin) == HIGH) {
+    if (millis() - last_signal_time > delay_button) {
+      last_signal_time = 2147483647;
+      return 1;
+    }
+    else {
+      last_signal_time = millis();
+    }
+
+  }
 }
+
+bool stop_button_processing(bool stop_state) {
+  static int last_signal_time = 2147483647;
+  static const int delay_button;
+  //функция обработки кнопки стоп.
+
+  if (stop_state) {
+    return stop_state;
+  }
+
+  //повторить для всех трех кнопок
+  if (digitalRead(stop_button_pin) == HIGH) {
+    if (millis() - last_signal_time > delay_button) {
+      last_signal_time = 2147483647;
+      return true;
+    }
+    else {
+      last_signal_time = millis();
+      return false;
+    }
+
+  }
+}
+
 
 int scenario_close (Movement movement) {
   if (accumulator_inc_step < Engine.v_end) {
@@ -183,7 +218,7 @@ int scenario_close (Movement movement) {
     }
   }
 }
-}
+
 
 int scenario_seal (Movement movement) {
   if (accumulator_inc_step < Engine.v_end) {
@@ -214,7 +249,7 @@ int scenario_seal (Movement movement) {
     }
   }
 }
-}
+
 
 int scenario_unseal (Movement movement) {
   if (accumulator_inc_step < Engine.v_end) {
@@ -245,76 +280,47 @@ int scenario_unseal (Movement movement) {
     }
   }
 }
-}
+
 
 int scenario_manager(State state, int active_scenario, Movement movement) {
   //функция запуская и контроля статусов выполнения сценариев.
-  static int active_scenario;
 
-  switch (active_scenario):
+  switch (active_scenario)
+  {
     case closed:
-    scenario_close();
-  case unsealed:
-    scenario_unsealed();
-  case sealed:
-    scenario_seal ();
+      scenario_close();
+      break;
+    case unsealed:
+      scenario_unsealed();
+      break;
+    case sealed:
+      scenario_seal ();
+      break;
+    default:
+      break;
   }
 
 
   void setup() {
 
-  Serial.begin(9600);
-  //define pin modes
-
-}
-
-
-State state;
-int active_scenario;
-int process_state;
-
-//Инкремент аккумулятора шага. Изначально равен начальной скорости.
-int accumulator_inc_step = Engine.v_start;
-void loop() {
-
-  active_scenario = inputs_processing(state);
-
-  scenario_manager(state, active_scenario);
-
-
-  if (button1_state == true) {
-    {
-      //проверка аккумулятора ускорения. Запускается если скорость не превышает максимальной.
-      if (accumulator_inc_step < Engine.v_end) {
-        if (phase_accumulator_acc() == true) {
-          accumulator_inc_step = accumulator_inc_step * Engine.acc;
-        }
-      }
-      //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
-      if (phase_accumulator_step(accumulator_inc_step) == true) {
-        //Запуск примитива.
-        process_state = movement_to_switch(movement, state.stop_state);
-        if (process_state == 0)
-        {
-          //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-          stop_state = false;
-          button1_state = false;
-          accumulator_inc_step = Engine.v_start;
-          phase_accumulator_acc(reset = true);
-          phase_accumulator_step(reset = true);
-        }
-        if (process_state == 1)
-        {
-          stop_state = false;
-          button1_state = false;
-          accumulator_inc_step = Engine.v_start;
-          phase_accumulator_acc(reset = true);
-          phase_accumulator_step(reset = true);
-        }
-      }
-    }
+    Serial.begin(9600);
+    //define pin modes
 
   }
-}
+
+
+  State state;
+  int active_scenario;
+  int process_state;
+
+  //Инкремент аккумулятора шага. Изначально равен начальной скорости.
+  int accumulator_inc_step = Engine.v_start;
+  void loop() {
+
+    active_scenario = buttons_processing(state);
+    state.stop_state = stop_button_processing;
+
+    
+    scenario_manager(state, active_scenario);
 
 }
