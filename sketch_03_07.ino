@@ -1,4 +1,4 @@
-﻿﻿//define pins
+﻿//define pins
 
 
 enum switch_state {closed, sealed, unsealed};
@@ -189,10 +189,12 @@ bool stop_button_processing(bool stop_state) {
 }
 
 
-int scenario_close (Movement movement) {
-  if (accumulator_inc_step < Engine.v_end) {
+int scenario_close (State state, Movement movement) {
+  static int accumulator_inc_step = movement.engine.v_start;
+  static int process_state = 2;
+  if (accumulator_inc_step < movement.engine.v_end) {
     if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * Engine.acc;
+      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
     }
   }
   //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
@@ -202,28 +204,29 @@ int scenario_close (Movement movement) {
     if (process_state == 0)
     {
       //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 0;
     }
     if (process_state == 1)
     {
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 1;
     }
   }
+  return 2;
 }
 
 
-int scenario_seal (Movement movement) {
-  if (accumulator_inc_step < Engine.v_end) {
+int scenario_seal (State state, Movement movement) {
+  static int accumulator_inc_step = movement.engine.v_start;
+  static int process_state = 2;
+  if (accumulator_inc_step < movement.engine.v_end) {
     if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * Engine.acc;
+      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
     }
   }
   //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
@@ -233,28 +236,27 @@ int scenario_seal (Movement movement) {
     if (process_state == 0)
     {
       //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 0;
     }
     if (process_state == 1)
     {
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 1;
     }
   }
+  return 2;
 }
-
-
-int scenario_unseal (Movement movement) {
-  if (accumulator_inc_step < Engine.v_end) {
+int scenario_unseal (State state, Movement movement) {
+  static int accumulator_inc_step = movement.engine.v_start;
+  static int process_state = 2;
+  if (accumulator_inc_step < movement.engine.v_end) {
     if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * Engine.acc;
+      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
     }
   }
   //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
@@ -264,40 +266,40 @@ int scenario_unseal (Movement movement) {
     if (process_state == 0)
     {
       //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 0;
     }
     if (process_state == 1)
     {
-      stop_state = false;
-      button1_state = false;
       accumulator_inc_step = Engine.v_start;
       phase_accumulator_acc(reset = true);
       phase_accumulator_step(reset = true);
+      return 1;
     }
   }
+  return 2;
 }
 
 
 int scenario_manager(State state, int active_scenario, Movement movement) {
-  //функция запуская и контроля статусов выполнения сценариев.
+  //функция запуска и контроля статусов выполнения сценариев.
+  static int scenario_state;
 
   switch (active_scenario)
   {
     case closed:
-      scenario_close();
-      break;
+      scenario_state = scenario_close(state, movement);
+      return scenario_state;
     case unsealed:
-      scenario_unsealed();
-      break;
+      scenario_state = scenario_unsealed(state, movement);
+      return scenario_state;
     case sealed:
-      scenario_seal ();
-      break;
+      scenario_state = scenario_seal (state, movement);
+      return scenario_state;
     default:
-      break;
+      return scenario_state;
   }
 
 
@@ -311,16 +313,30 @@ int scenario_manager(State state, int active_scenario, Movement movement) {
 
   State state;
   int active_scenario;
-  int process_state;
+  int scenario_state;
 
   //Инкремент аккумулятора шага. Изначально равен начальной скорости.
   int accumulator_inc_step = Engine.v_start;
   void loop() {
 
+    //обзвон кнопок и свичей
     active_scenario = buttons_processing(state);
     state.stop_state = stop_button_processing;
 
-    
-    scenario_manager(state, active_scenario);
+    //запуск обработки сценариев
+    scenario_state = scenario_manager(state, active_scenario);
+    switch (scenario_state)
+    {
+      case 1:
+        active_scenario = 0;
+        state.stop_state = false;
+        break;
+      case 2: 
+        active_scenario = 0;
+        state.stop_state = false;
+        break;
+      default:
+        break;
+    }
 
-}
+  }
