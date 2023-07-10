@@ -1,7 +1,22 @@
-﻿//define pins
-
+﻿﻿//define pins
+#define close_button_pin 1
+#define stop_button_pin 2
 
 enum switch_state {closed, sealed, unsealed};
+
+enum scenario_state {check_closed, init_unsealed, work_unsealed, init_closed, work_closed, init_sealed, work_sealed, scenario_exit};
+
+struct Events {
+  bool button_close_event;
+  bool button_unseal_event;
+  bool button_seal_event; 
+  bool button_stop_event;
+  bool switch_stop_event;
+  bool switch_seal_event;  
+  bool switch_unseal_event;
+};
+
+
 
 struct Engine {
   //структура управления двигателем
@@ -35,10 +50,28 @@ struct State {
   bool unseal_button_state;
 };
 
+struct Prim_Context {
+  bool active;
+  int current_speed;
+  int accumulator_inc_acc;
+  int accumulator_inc_step;
+  Movement* movement;
+  bool step_event;
+  int time_of_start;
+};
+
+//TODO структура управления движением от концевки до его выключения
+
+struct Scen_Context {
+  bool active;
+  int (*scenario_func)();
+  int scenario_state;
+};
+
 bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
   //Фазовый аккумулятор регулирующий ход мотора. Начальный инкремент соответствует начальной скорости, увеличивается аккумулятором ускорения.
   static long accumulator_step;
-  static const int buffer_length_step = 32;
+  static const int buffer_length_step = 16;
   static const int mask_step = 1 << buffer_length_step;
   static bool previous_separator_bit_step;
   bool separator_bit;
@@ -66,9 +99,9 @@ bool phase_accumulator_acc (bool reset = false) {
   //Если инкремент соответствующий начальной скорости мотора незначительно больше инкремента ускорения, то можно использовать accumulator_inc_acc = Engine.v_start
   //Иначе его можно вычислить как (Engine.v_end - Engine.v_start)/t, где t - время ускорения от начальной до конечной скорости.
 
-  const int accumulator_inc_acc;
+  static const int accumulator_inc_acc;
   static long accumulator_acc;
-  static const int buffer_length_acc = 32;
+  static const int buffer_length_acc = 16;
   static const int mask_acc = 1 << buffer_length_acc;
   bool separator_bit;
   static bool previous_separator_bit_acc;
@@ -92,49 +125,51 @@ bool phase_accumulator_acc (bool reset = false) {
 
 }
 
-int movement_to_switch(Movement movement, bool stop_state) {
+int movement_to_switch(Prim_Context prim_context) {
   //Абстрактный примитив первого уровня «Движение мотора W со скоростью X в направлении Y до срабатывания концевого выключателя Z».
   //Возвращает код результата работы. 0 - авария, 1 - успех, 2 - работа не закончена.
-  static int time_of_start;
 
   //Запуск счетчика общего таймаута.
-  if (time_of_start != 0)
+  if (prim_context.time_of_start != 0)
   {
-    time_of_start = micros();
+    prim_context.time_of_start = micros();
     //Запись сигнала enable. Таким образом будет вызываться только при первом запуске функции. Предположительно существует более красивое решение.
-    digitalWrite(movement.engine.enable_pin, movement.engine.enable_pol);
+    digitalWrite(prim_context.movement->engine->enable_pin, prim_context.movement->engine->enable_pol);
   }
 
   //Проверка состояния концевика.
-  if (digitalRead(movement.switch_pin) == movement.switch_pol)
+  //TODO вынести проверку концевиков в отдельную функцию.
+  if (digitalRead(prim_context.movement.switch_pin) == prim.context.movement.switch_pol)
   {
     time_of_start = 0;
     //Ардуино хранит цифровые сигналы не как булеву переменную, а как значения HIGH и LOW. Чему равны эти значения зависит от имплементации, логическое отрицание
     //записанного в переменную значения работать не будет. Но !digitalRead(pin) должно работать и инвертировать полученное значение.
-    digitalWrite(movement.engine.enable_pin, LOW);
+    digitalWrite(prim_context.movement->engine->enable_pin, LOW);
     return 1;
   }
 
 
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
+  //TODO понять как происходит обработка стопстейт
+  /*
   if (stop_state == true)
   {
     time_of_start = 0;
-    digitalWrite(movement.engine.enable_pin, LOW);
+    digitalWrite(movement.engine->enable_pin, LOW);
     return 0;
   }
-
+  */
   //Запись сигнала direction.
-  digitalWrite(movement.engine.dir_pin, movement.engine_dir_pol);
+  digitalWrite(movement.engine->dir_pin, movement.engine_dir_pol);
 
   //Запись сигнала step обратного текущему. Данное заклинание должно работать по причине указанной выше.
-  digitalWrite(movement.engine.step_pin, !digitalRead(movement.engine.step_pin));
+  digitalWrite(movement.engine->step_pin, !digitalRead(movement.engine->step_pin));
 
   //Проверка таймаута.
-  if (micros() - time_of_start < movement.engine.timeout)
+  if (micros() - prim_context.time_of_start < prim_context.movement->engine->timeout)
   {
-    time_of_start = 0;
-    digitalWrite(movement.engine.enable_pin, LOW);
+    prim_context.time_of_start = 0;
+    digitalWrite(prim_context.movement->engine->enable_pin, LOW);
     return 0;
   }
 
@@ -142,7 +177,8 @@ int movement_to_switch(Movement movement, bool stop_state) {
 }
 
 
-int buttons_processing(int active_scenario) {
+State buttons_processing(State state, Events events) {
+  //TODO переписать на работу со структурами
   static int last_signal_time = 2147483647;
   static const int delay_button;
   //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10. Возвращает активный сценарий.
@@ -163,6 +199,7 @@ int buttons_processing(int active_scenario) {
     }
 
   }
+  return state;
 }
 
 bool stop_button_processing(bool stop_state) {
@@ -190,100 +227,29 @@ bool stop_button_processing(bool stop_state) {
 
 
 int scenario_close (State state, Movement movement) {
-  static int accumulator_inc_step = movement.engine.v_start;
-  static int process_state = 2;
-  if (accumulator_inc_step < movement.engine.v_end) {
-    if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
-    }
-  }
-  //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
-  if (phase_accumulator_step(accumulator_inc_step) == true) {
-    //Запуск примитива.
-    process_state = movement_to_switch(movement, state.stop_state);
-    if (process_state == 0)
-    {
-      //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 0;
-    }
-    if (process_state == 1)
-    {
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 1;
-    }
-  }
-  return 2;
+
 }
 
 
-int scenario_seal (State state, Movement movement) {
-  static int accumulator_inc_step = movement.engine.v_start;
-  static int process_state = 2;
-  if (accumulator_inc_step < movement.engine.v_end) {
+Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
+  if (prim_context.current_speed < prim_context.movement->engine->v_end) {
     if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
+      prim_context.current_speed++;
     }
   }
-  //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
-  if (phase_accumulator_step(accumulator_inc_step) == true) {
-    //Запуск примитива.
-    process_state = movement_to_switch(movement, state.stop_state);
-    if (process_state == 0)
-    {
-      //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 0;
-    }
-    if (process_state == 1)
-    {
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 1;
-    }
+  //проверка аккумулятора хода. Запускается всегда, при успехе создает событие step_event
+  if (phase_accumulator_step(prim_context.accumulator_inc_step) == true) {
+    prim_context.step_event = true;
   }
-  return 2;
+  return prim_context;
 }
-int scenario_unseal (State state, Movement movement) {
-  static int accumulator_inc_step = movement.engine.v_start;
-  static int process_state = 2;
-  if (accumulator_inc_step < movement.engine.v_end) {
-    if (phase_accumulator_acc() == true) {
-      accumulator_inc_step = accumulator_inc_step * movement.engine.acc;
-    }
-  }
-  //проверка аккумулятора хода. Запускается всегда, запускает примитив при возвращении true
-  if (phase_accumulator_step(accumulator_inc_step) == true) {
-    //Запуск примитива.
-    process_state = movement_to_switch(movement, state.stop_state);
-    if (process_state == 0)
-    {
-      //При получении из примитива состояний "успех" или "провал" сбрасывает состояния релевантных кнопок. Сбрасывает аккумуляторы.
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 0;
-    }
-    if (process_state == 1)
-    {
-      accumulator_inc_step = Engine.v_start;
-      phase_accumulator_acc(reset = true);
-      phase_accumulator_step(reset = true);
-      return 1;
-    }
-  }
-  return 2;
+int scenario_unseal (State state, Prim_Context prim_context) {
+    
 }
 
 
-int scenario_manager(State state, int active_scenario, Movement movement) {
+/* TODO сделать это
+int scenario_manager(Prim_Context prim_context, Scen_Context scen_context, State state) {
   //функция запуска и контроля статусов выполнения сценариев.
   static int scenario_state;
 
@@ -302,7 +268,7 @@ int scenario_manager(State state, int active_scenario, Movement movement) {
       return scenario_state;
   }
 
-
+*/
   void setup() {
 
     Serial.begin(9600);
@@ -312,17 +278,32 @@ int scenario_manager(State state, int active_scenario, Movement movement) {
 
 
   State state;
+  Prim_Context prim_context;
+  Scen_Context scen_context;
+  Events events;
   int active_scenario;
   int scenario_state;
 
   //Инкремент аккумулятора шага. Изначально равен начальной скорости.
-  int accumulator_inc_step = Engine.v_start;
+  //int accumulator_inc_step = Engine.v_start;
   void loop() {
 
     //обзвон кнопок и свичей
-    active_scenario = buttons_processing(state);
-    state.stop_state = stop_button_processing;
+    state = buttons_processing(state, events);
+    state.stop_state = stop_button_processing(state.stop_state);
 
+    //TODO добавить функцию приведения состояния лампочек в соответствие state
+
+    prim_context = vel_accel(prim_context);
+
+    //TODO модерирует prim_context
+    //prim_context = scenario_manager(prim_context, scen_context, state);
+
+    if (prim_context.step_signal){
+      movement_to_switch(prim_context, state);
+      prim_context.step_signal = false;
+    }
+/*
     //запуск обработки сценариев
     scenario_state = scenario_manager(state, active_scenario);
     switch (scenario_state)
@@ -338,5 +319,5 @@ int scenario_manager(State state, int active_scenario, Movement movement) {
       default:
         break;
     }
-
+*/
   }
