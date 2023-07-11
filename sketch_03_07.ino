@@ -2,20 +2,9 @@
 #define close_button_pin 1
 #define stop_button_pin 2
 
-enum switch_state {closed, sealed, unsealed};
+enum Scenario_Type {closing, sealing, unsealing};
 
-enum scenario_state {check_closed, init_unsealed, work_unsealed, init_closed, work_closed, init_sealed, work_sealed, scenario_exit};
-
-struct Events {
-  bool button_close_event;
-  bool button_unseal_event;
-  bool button_seal_event; 
-  bool button_stop_event;
-  bool switch_stop_event;
-  bool switch_seal_event;  
-  bool switch_unseal_event;
-};
-
+enum Scenario_State {check_closed, init_unsealed, work_unsealed, init_closed, work_closed, init_sealed, work_sealed, scenario_exit};
 
 
 struct Engine {
@@ -48,6 +37,7 @@ struct State {
   bool seal_button_state;
   bool unseal_switch_state;
   bool unseal_button_state;
+  int active_scenario;
 };
 
 struct Prim_Context {
@@ -64,9 +54,23 @@ struct Prim_Context {
 
 struct Scen_Context {
   bool active;
-  int (*scenario_func)();
-  int scenario_state;
+  Prim_Context (*scenario_func)(Prim_Context);
+  Scenario_State scenario_state;
+  Scenario_Type scenario_type;
 };
+
+
+struct Events {
+  bool button_close_event;
+  bool button_unseal_event;
+  bool button_seal_event;
+  bool button_stop_event;
+  bool switch_stop_event;
+  bool switch_seal_event;
+  bool switch_unseal_event;
+  Scen_Context* scen_context; //Указатель на контекст сценариев. Нужен чтобы инициализировать сценарий при нажатии на кнопку.
+};
+
 
 bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
   //Фазовый аккумулятор регулирующий ход мотора. Начальный инкремент соответствует начальной скорости, увеличивается аккумулятором ускорения.
@@ -152,12 +156,12 @@ int movement_to_switch(Prim_Context prim_context) {
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
   //TODO понять как происходит обработка стопстейт
   /*
-  if (stop_state == true)
-  {
+    if (stop_state == true)
+    {
     time_of_start = 0;
     digitalWrite(movement.engine->enable_pin, LOW);
     return 0;
-  }
+    }
   */
   //Запись сигнала direction.
   digitalWrite(movement.engine->dir_pin, movement.engine_dir_pol);
@@ -184,15 +188,31 @@ State buttons_processing(State state, Events events) {
   //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10. Возвращает активный сценарий.
 
   //если есть активный сценарий, то даже не смотреть на кнопки
-  if (active_scenario != 0) {
-    return active_scenario;
+
+  //TODO переписать на events, разобраться как учитывать время. Можно хранить время для каждого сигнала, но это звучит избыточно, возможно существует решение лучше.
+
+  if (digitalRead(stop_button_pin) == HIGH) {
+    if (millis() - last_signal_time > delay_button) {
+      last_signal_time = 2147483647;
+      state.stop_state = true;
+    }
+    else {
+      last_signal_time = millis();
+    }
+
+  }
+  if (state.scen_context->active) {
+    return state;
   }
 
   //повторить для всех трех кнопок
   if (digitalRead(close_button_pin) == HIGH) {
     if (millis() - last_signal_time > delay_button) {
       last_signal_time = 2147483647;
-      return 1;
+      state.close_button_state = true;
+      state.scen_context->scenario_type = closing;
+      state.scen_context->active = true;
+      return state;
     }
     else {
       last_signal_time = millis();
@@ -202,33 +222,6 @@ State buttons_processing(State state, Events events) {
   return state;
 }
 
-bool stop_button_processing(bool stop_state) {
-  static int last_signal_time = 2147483647;
-  static const int delay_button;
-  //функция обработки кнопки стоп.
-
-  if (stop_state) {
-    return stop_state;
-  }
-
-  //повторить для всех трех кнопок
-  if (digitalRead(stop_button_pin) == HIGH) {
-    if (millis() - last_signal_time > delay_button) {
-      last_signal_time = 2147483647;
-      return true;
-    }
-    else {
-      last_signal_time = millis();
-      return false;
-    }
-
-  }
-}
-
-
-int scenario_close (State state, Movement movement) {
-
-}
 
 
 Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
@@ -244,80 +237,77 @@ Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
   return prim_context;
 }
 int scenario_unseal (State state, Prim_Context prim_context) {
-    
+
 }
 
 
-/* TODO сделать это
-int scenario_manager(Prim_Context prim_context, Scen_Context scen_context, State state) {
+//TODO сделать сценарии. Нужно написать две функции для каждого движения в сторону концевиков: инициализация и исполнение. Они должны создавать корректный prim_context.
+Scen_Context scenario_sealing(Prim_Context prim_context, Scen_Context scen_context, State state) {
   //функция запуска и контроля статусов выполнения сценариев.
-  static int scenario_state;
-
-  switch (active_scenario)
+  switch (scen_context.scenario_state)
   {
-    case closed:
-      scenario_state = scenario_close(state, movement);
-      return scenario_state;
-    case unsealed:
-      scenario_state = scenario_unsealed(state, movement);
-      return scenario_state;
-    case sealed:
-      scenario_state = scenario_seal (state, movement);
-      return scenario_state;
+  }
+}
+
+Scen_Context scenario_unsealing(Prim_Context prim_context, Scen_Context scen_context, State state) {
+  //функция запуска и контроля статусов выполнения сценариев.
+  switch (scen_context.scenario_state)
+  {
+  }
+}
+
+Scen_Context scenario_closing(Prim_Context prim_context, Scen_Context scen_context, State state) {
+  //функция запуска и контроля статусов выполнения сценариев.
+  switch (scen_context.scenario_state)
+  {
+  }
+}
+
+
+void setup() {
+
+  Serial.begin(9600);
+  //define pin modes
+
+}
+
+
+State state;
+Prim_Context prim_context;
+Scen_Context scen_context;
+Events events;
+int active_scenario;
+int scenario_state;
+
+//Инкремент аккумулятора шага. Изначально равен начальной скорости.
+//int accumulator_inc_step = Engine.v_start;
+void loop() {
+
+  //обзвон кнопок и свичей. buttons_processing инициализирует сценарий при записи состояния кнопки в state
+  state = buttons_processing(state, events);
+
+  //TODO добавить функцию приведения состояния лампочек в соответствие state
+
+  prim_context = vel_accel(prim_context);
+
+  switch(scen_context.scenario_type)
+  {
+    case(closing):
+      scen_context = scenario_closing(prim_context, scen_context, state);
+      break;
+    case(sealing):
+      scen_context = scenario_sealing(prim_context, scen_context, state);
+      break;
+    case(unsealing):
+      scen_context = scenario_unsealing(prim_context, scen_context, state);
+      break;
     default:
-      return scenario_state;
+      break;
   }
 
-*/
-  void setup() {
-
-    Serial.begin(9600);
-    //define pin modes
-
+  if (prim_context.step_signal) {
+    movement_to_switch(prim_context, state);
+    prim_context.step_signal = false;
   }
 
-
-  State state;
-  Prim_Context prim_context;
-  Scen_Context scen_context;
-  Events events;
-  int active_scenario;
-  int scenario_state;
-
-  //Инкремент аккумулятора шага. Изначально равен начальной скорости.
-  //int accumulator_inc_step = Engine.v_start;
-  void loop() {
-
-    //обзвон кнопок и свичей
-    state = buttons_processing(state, events);
-    state.stop_state = stop_button_processing(state.stop_state);
-
-    //TODO добавить функцию приведения состояния лампочек в соответствие state
-
-    prim_context = vel_accel(prim_context);
-
-    //TODO модерирует prim_context
-    //prim_context = scenario_manager(prim_context, scen_context, state);
-
-    if (prim_context.step_signal){
-      movement_to_switch(prim_context, state);
-      prim_context.step_signal = false;
-    }
-/*
-    //запуск обработки сценариев
-    scenario_state = scenario_manager(state, active_scenario);
-    switch (scenario_state)
-    {
-      case 1:
-        active_scenario = 0;
-        state.stop_state = false;
-        break;
-      case 2: 
-        active_scenario = 0;
-        state.stop_state = false;
-        break;
-      default:
-        break;
-    }
-*/
-  }
+}
