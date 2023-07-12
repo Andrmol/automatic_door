@@ -43,6 +43,12 @@ enum Scenario_State {
   LAST_SC_STATE
 };
 
+enum Prim_State {
+  WORKING,
+  SUCCESS,
+  STOPPED
+};
+
 
 typedef struct {   //структура управления двигателем
   const int dir_pin; //Пин сигнала direction
@@ -113,7 +119,7 @@ Movement movements[MOVEMENTS_NUMBER] = {
   }
 };
 
-struct Prim_Context {
+typedef struct  {
   bool active;
   int current_inc_step; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
   int inc_vel_end; //при инициализации задается равным inc_vel_end = length_of_buffer * 1 μs * engine.v_end
@@ -123,18 +129,19 @@ struct Prim_Context {
   bool step_event;
   long time_of_timeout;
   Movement* how_to_move;
-};
+  Prim_State prim_state;
+} Prim_Context;
 
 
-struct Scen_Context {
+typedef struct {
   bool active;
   Prim_Context (*scenario_func)(Prim_Context, Movement);
   Scenario_State scenario_state;
   Scenario_Type scenario_type;
-};
+} Scen_Context;
 
 
-struct State {
+typedef struct {
   //структура состояния кнопок и концевиков. активной может быть только одна кнопка. хранить состояние всех кнопок избыточно, достаточно иметь одну переменную хранящую активную кнопку.
   bool stop_state;
   bool close_switch_state;
@@ -144,7 +151,7 @@ struct State {
   bool unseal_switch_state;
   bool unseal_button_state;
   Scen_Context* scen_context; //Указатель на контекст сценариев. Нужен чтобы инициализировать сценарий при нажатии на кнопку.
-};
+} State;
 
 
 
@@ -152,7 +159,7 @@ struct State {
 
 
 
-struct Events {
+typedef struct  {
   bool button_close_event;
   bool button_unseal_event;
   bool button_seal_event;
@@ -160,8 +167,12 @@ struct Events {
   bool switch_stop_event;
   bool switch_seal_event;
   bool switch_unseal_event;
-};
+} Events;
 
+
+Prim_Context vel_accel (Prim_Context prim_context, bool reset = false); //Функция регулирующая запуск аккумуляторов. Генерирует step_event
+int movement_to_switch(Prim_Context prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
+Prim_Context init_primitive(Prim_Context prim_context, Movement* movement); //Функция инициализирующая аккумуляторы. 
 
 bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
   //Фазовый аккумулятор регулирующий ход мотора. Начальный инкремент соответствует начальной скорости, увеличивается аккумулятором ускорения.
@@ -254,41 +265,45 @@ Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
 
 
 
-int movement_to_switch(Prim_Context prim_context, State state) {
+void movement_to_switch(Prim_Context* prim_context, State* state) {
   //Абстрактный примитив первого уровня «Движение мотора W со скоростью X в направлении Y до срабатывания концевого выключателя Z».
   //Возвращает код результата работы. 0 - авария, 1 - успех, 2 - работа не закончена.
 
   //Проверка таймаута
-  if (prim_context.time_of_timeout - micros() < 0) {
-    return 0;
+  if (prim_context->time_of_timeout - micros() < 0) {
+    prim_context->prim_state = STOPPED;
+    return;
   }
 
   //Проверка состояния концевика.
   //TODO вынести проверку концевиков в отдельную функцию.
-  if (digitalRead(prim_context.how_to_move->switch_pin) == prim_context.how_to_move->switch_pol)
+  if (digitalRead(prim_context->how_to_move->switch_pin) == prim_context->how_to_move->switch_pol)
   {
     //Ардуино хранит цифровые сигналы не как булеву переменную, а как значения HIGH и LOW. Чему равны эти значения зависит от имплементации, логическое отрицание
     //записанного в переменную значения работать не будет. Но !digitalRead(pin) должно работать и инвертировать полученное значение.
-    digitalWrite(prim_context.how_to_move->engine->enable_pin, LOW);
-    return 1;
+    digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
+    prim_context->prim_state = SUCCESS;
+    return;
   }
 
 
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
 
-  if (state.stop_state == true)
+  if (state->stop_state == true)
   {
-    digitalWrite(prim_context.how_to_move->engine->enable_pin, LOW);
-    return 0;
+    digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
+    prim_context->prim_state = STOPPED;
+    return;
   }
 
   //Запись сигнала direction.
-  digitalWrite(prim_context.how_to_move->engine->dir_pin, prim_context.how_to_move->engine_dir_pol);
+  digitalWrite(prim_context->how_to_move->engine->dir_pin, prim_context->how_to_move->engine_dir_pol);
 
   //Запись сигнала step обратного текущему. Данное заклинание должно работать по причине указанной выше.
-  digitalWrite(prim_context.how_to_move->engine->step_pin, !digitalRead(prim_context.how_to_move->engine->step_pin));
+  digitalWrite(prim_context->how_to_move->engine->step_pin, !digitalRead(prim_context->how_to_move->engine->step_pin));
 
-  return 2;
+  prim_context->prim_state = WORKING;
+  return;
 }
 
 
@@ -398,7 +413,7 @@ State buttons_processing(State state, Events events, bool scenario_active) {
   return state;
 }
 
-
+//TODO ввести структуру для аккумулятора и вынести управление временем и обнуление в инициализацию
 Prim_Context init_primitive(Prim_Context prim_context, Movement* movement) {
   prim_context.how_to_move = movement;
   prim_context.current_inc_step = 16 * prim_context.how_to_move->engine->v_start;
@@ -413,203 +428,197 @@ Prim_Context init_primitive(Prim_Context prim_context, Movement* movement) {
 }
 
 
-
-Scen_Context scenario_sealing(Prim_Context* prim_context, Scen_Context scen_context, State* state, Movement movements[3]) {
+//TODO вынести исполнение примитива за пределы сценария
+void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
   int prim_result;
-  switch (scen_context.scenario_state)
+  switch (scen_context->scenario_state)
   {
     case (CHECK_CLOSED):
       if (state->close_switch_state) {
-        scen_context.scenario_state = INIT_SEALED;
-        return scen_context;
+        scen_context->scenario_state = INIT_SEALED;
+        break;
       }
-      scen_context.scenario_state = INIT_UNSEALED;
-      return scen_context;
+      scen_context->scenario_state = INIT_UNSEALED;
+      break;
     case (INIT_UNSEALED):
       *prim_context = init_primitive(*prim_context, &movements[2]);
-      scen_context.scenario_state = WORK_SEALED;
-      return scen_context;
+      scen_context->scenario_state = WORK_SEALED;
+      break;
     case (WORK_UNSEALED):
       if (prim_context->step_event) {
-        prim_result = movement_to_switch(*prim_context, *state);
         prim_context->step_event = false;
       }
-      switch (prim_result)
+      switch (prim_context->prim_state)
       {
-        case 0: //отработка аварии выполнения примитива
+        case STOPPED: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 1: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = INIT_CLOSED;
-          return scen_context;
-        case 2:
-          return scen_context;
+          scen_context->scenario_state = INIT_CLOSED;
+          break;
+        case WORKING:
+          break;
         default:
-          return scen_context;
+          break;
       }
     case (INIT_CLOSED):
       *prim_context = init_primitive(*prim_context, &movements[0]);
-      scen_context.scenario_state = WORK_CLOSED;
-      return scen_context;
+      scen_context->scenario_state = WORK_CLOSED;
+      break;
     case (WORK_CLOSED):
       if (prim_context->step_event) {
-        prim_result = movement_to_switch(*prim_context, *state);
         prim_context->step_event = false;
       }
-      switch (prim_result)
+      switch (prim_context->prim_state)
       {
-        case 0: //отработка аварии выполнения примитива
+        case STOPPED: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 1: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = INIT_SEALED;
-          return scen_context;
-        case 2:
-          return scen_context;
+          scen_context->scenario_state = INIT_SEALED;
+          break;
+        case WORKING:
+          break;
         default:
-          return scen_context;
-      }
+          break;
+      }  
     case (INIT_SEALED):
       *prim_context = init_primitive(*prim_context, &movements[1]);
-      scen_context.scenario_state = WORK_SEALED;
-      return scen_context;
+      scen_context->scenario_state = WORK_SEALED;
+      break;
     case (WORK_SEALED):
       if (prim_context->step_event) {
-        prim_result = movement_to_switch(*prim_context, *state);
         prim_context->step_event = false;
       }
-      switch (prim_result)
+      switch (prim_context->prim_state)
       {
-        case 0: //отработка аварии выполнения примитива
+        case STOPPED: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 1: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 2:
-          return scen_context;
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case WORKING:
+          break;
         default:
-          return scen_context;
-      }
+          break;
+      }      
     case (SCENARIO_EXIT):
-      scen_context.scenario_state = LAST_SC_STATE;
-      scen_context.scenario_type = LAST_SCENARIO;
-      scen_context.active = false;
-      return scen_context;
+      scen_context->scenario_state = LAST_SC_STATE;
+      scen_context->scenario_type = LAST_SCENARIO;
+      scen_context->active = false;
+      break;
     case (LAST_SC_STATE):
-      return scen_context;
+      break;
     default:
-      return scen_context;
+      break;
   }
 }
 
-Scen_Context scenario_unsealing(Prim_Context* prim_context, Scen_Context scen_context, State* state, Movement movements[3]) {
+void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
   int prim_result;
-  switch (scen_context.scenario_state)
+  switch (scen_context->scenario_state)
   {
     case (CHECK_UNSEALED):
       if (state->unseal_switch_state) {
-        scen_context.scenario_state = SCENARIO_EXIT;
-        return scen_context;
+        scen_context->scenario_state = SCENARIO_EXIT;
+        break;
       }
-      scen_context.scenario_state = INIT_UNSEALED;
-      return scen_context;
+      scen_context->scenario_state = INIT_UNSEALED;
+      break;
     case (INIT_UNSEALED):
       *prim_context = init_primitive(*prim_context, &movements[2]);
-      scen_context.scenario_state = WORK_SEALED;
-      return scen_context;
+      scen_context->scenario_state = WORK_SEALED;
+      break;
     case (WORK_UNSEALED):
       if (prim_context->step_event) {
-        prim_result = movement_to_switch(*prim_context, *state);
         prim_context->step_event = false;
       }
-      switch (prim_result)
+      switch (prim_context->prim_state)
       {
-        case 0: //отработка аварии выполнения примитива
+        case STOPPED: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 1: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 2:
-          return scen_context;
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case WORKING:
+          break;
         default:
-          return scen_context;
-      }
+          break;
+      }  
     case (SCENARIO_EXIT):
-      scen_context.scenario_state = LAST_SC_STATE;
-      scen_context.scenario_type = LAST_SCENARIO;
-      scen_context.active = false;
-      return scen_context;
+      scen_context->scenario_state = LAST_SC_STATE;
+      scen_context->scenario_type = LAST_SCENARIO;
+      scen_context->active = false;
+      break;
     case (LAST_SC_STATE):
-      return scen_context;
+      break;
     default:
-      return scen_context;
+      break;
   }
 }
+void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
 
-Scen_Context scenario_closing(Prim_Context* prim_context, Scen_Context scen_context, State* state, Movement movements[3]) {
-  int prim_result;
-  switch (scen_context.scenario_state)
+  switch (scen_context->scenario_state)
   {
     case (CHECK_CLOSED):
       if (state->close_switch_state) {
-        scen_context.scenario_state = SCENARIO_EXIT;
-        return scen_context;
+        scen_context->scenario_state = SCENARIO_EXIT;
+        break;
       }
-      scen_context.scenario_state = INIT_CLOSED;
-      return scen_context;
+      scen_context->scenario_state = INIT_CLOSED;
+      break;
     case (INIT_CLOSED):
       *prim_context = init_primitive(*prim_context, &movements[0]);
-      scen_context.scenario_state = WORK_CLOSED;
-      return scen_context;
+      scen_context->scenario_state = WORK_CLOSED;
+      break;
     case (WORK_CLOSED):
       if (prim_context->step_event) {
-        prim_result = movement_to_switch(*prim_context, *state);
         prim_context->step_event = false;
       }
-      switch (prim_result)
+      switch (prim_context->prim_state)
       {
-        case 0: //отработка аварии выполнения примитива
+        case STOPPED: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 1: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context.scenario_state = SCENARIO_EXIT;
-          return scen_context;
-        case 2:
-          return scen_context;
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case WORKING:
+          break;
         default:
-          return scen_context;
-      }
+          break;
+      }  
     case (SCENARIO_EXIT):
-      scen_context.scenario_state = LAST_SC_STATE;
-      scen_context.scenario_type = LAST_SCENARIO;
-      scen_context.active = false;
-      return scen_context;
+      scen_context->scenario_state = LAST_SC_STATE;
+      scen_context->scenario_type = LAST_SCENARIO;
+      scen_context->active = false;
+      break;
     case (LAST_SC_STATE):
-      return scen_context;
+      break;
     default:
-      return scen_context;
+      break;
   }
 }
 
@@ -634,10 +643,9 @@ void setup() {
 
   Serial.begin(9600);
   //define pin modes
-  
+
 
 }
-
 
 
 
@@ -655,16 +663,19 @@ void loop() {
 
   prim_context = vel_accel(prim_context);
 
+  movement_to_switch(&prim_context, &state);
+
+
   switch (scen_context.scenario_type)
   {
     case (CLOSING):
-      scen_context = scenario_closing(&prim_context, scen_context, &state, movements);
+      scenario_closing(&prim_context, &scen_context, &state, movements);
       break;
     case (SEALING):
-      scen_context = scenario_sealing(&prim_context, scen_context, &state, movements);
+      scenario_sealing(&prim_context, &scen_context, &state, movements);
       break;
     case (UNSEALING):
-      scen_context = scenario_unsealing(&prim_context, scen_context, &state, movements);
+      scenario_unsealing(&prim_context, &scen_context, &state, movements);
       break;
     case (LAST_SCENARIO):
       break;
@@ -672,4 +683,3 @@ void loop() {
 
 
 }
-
