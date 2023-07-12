@@ -1,21 +1,50 @@
-﻿﻿//define pins
-#define close_button_pin 1
-#define stop_button_pin 2
-#define seal_button_pin 3
-#define unseal_button_pin 4
-#define close_switch_pin 3
-#define seal_switch_pin 3
-#define unseal_switch_pin 3
+﻿//define pins
+
+#ifndef HIGH
+#define HIGH 1
+#define LOW  (!HIGH)
+#endif
+
+#define STOP_BUTTON_PIN 2
+
+#define CLOSE_BUTTON_PIN 1
+#define CLOSED_SWITCH_PIN 3
+#define OPENED_SWITCH_PIN 3
+
+#define SEAL_BUTTON_PIN 3
+#define SEALED_SWITCH_PIN 3
+
+#define UNSEAL_BUTTON_PIN 4
+#define UNSEALED_SWITCH_PIN 4
+
+#define CLOSE_DIR_PIN 3
+#define SEAL_DIR_PIN 3
+#define CLOSE_ENBL_PIN 3
+#define SEAL_ENBL_PIN 3
+#define CLOSE_STEP_PIN 3
+#define SEAL_STEP_PIN 3
+
+enum Engine_Item { CLOSE_ENG, SEAL_ENG, ENGINES_NUMBER};
+enum Movements_Item { TO_CLOSE, TO_SEAL, TO_UNSEAL, FROM_SEAL, FROM_UNSEAL, MOVEMENTS_NUMBER};
+
+enum Scenario_Type {CLOSING, SEALING, UNSEALING, LAST_SCENARIO};
+
+enum Scenario_State {
+  CHECK_CLOSED,
+  CHECK_UNSEALED,
+  CHECK_SEALED,
+  INIT_UNSEALED,
+  WORK_UNSEALED,
+  INIT_CLOSED,
+  WORK_CLOSED,
+  INIT_SEALED,
+  WORK_SEALED,
+  SCENARIO_EXIT,
+  LAST_SC_STATE
+};
 
 
-
-enum Scenario_Type {closing, sealing, unsealing, none};
-
-enum Scenario_State {check_closed, check_unsealed, check_sealed, init_unsealed, work_unsealed, init_closed, work_closed, init_sealed, work_sealed, scenario_exit, none};
-
-
-struct Engine {
-  //структура управления двигателем
+typedef struct {   //структура управления двигателем
   const int dir_pin; //Пин сигнала direction
   const int step_pin; //Пин сигнала step
   const int v_start; //Стартовая скорость двигателя в шагах/с
@@ -23,57 +52,86 @@ struct Engine {
   const int acc; // Ускорение двигателя в шагах/c^2
   const int enable_pin; // Пин сигнала enable
   const byte enable_pol; // Полярность сигнала enable
-  const long timeout; // Таймаут операции в микросекундах
-};
+  const long timeout_uS; // Таймаут операции в микросекундах
+} Engine ;
+
 //инициализация двигателей
-Engine engine_closing;
-//engine_closing.dir_pin = smth;
-//engine_closing.step_pin = smth;
-engine_closing.v_start = 0;
-engine_closing.v_end = 800;
-engine_closing.acc = 16;
-//engine_closing.enable_pin = smth;
-//engine_closing.enable_pol = smth;
-engine_closing.timeout = 10000;
+Engine engines[ENGINES_NUMBER] = {
+  { //CLOSE_ENG
+    .dir_pin = CLOSE_DIR_PIN,
+    .step_pin = CLOSE_STEP_PIN,
+    .v_start = 0,
+    .v_end = 800,
+    .acc = 16,
+    .enable_pin = CLOSE_ENBL_PIN,
+    .enable_pol = HIGH,
+    .timeout_uS = 20000000L
+  },
+  { //SEAL_ENG
+    .dir_pin = SEAL_DIR_PIN,
+    .step_pin = SEAL_STEP_PIN,
+    .v_start = 0,
+    .v_end = 800,
+    .acc = 16,
+    .enable_pin = SEAL_ENBL_PIN,
+    .enable_pol = LOW,
+    .timeout_uS = 30000000L
+  }
+};
 
-Engine engine_sealing;
-//engine_sealing.dir_pin = smth;
-//engine_sealing.step_pin = smth;
-engine_sealing.v_start = 0;
-engine_sealing.v_end = 800;
-engine_sealing.acc = 16;
-//engine_sealing.enable_pin = smth;
-//engine_sealing.enable_pol = smth;
-engine_sealing.timeout = 10000;
 
 
 
-struct Movement {
+typedef struct  {
   //управление движением в сторону концевика
   const int switch_pin; //пин концевика
   const byte switch_pol; //полярность успеха концевика
   const byte engine_dir_pol; //полярность направления движения мотора в сторону концевика
   Engine* engine; //указатель на структуру двигателя
+} Movement;
+
+
+//инициализация структур движений
+Movement movements[MOVEMENTS_NUMBER] = {
+  { //TO_CLOSE,
+    .switch_pin = CLOSED_SWITCH_PIN,
+    .switch_pol = HIGH,
+    .engine_dir_pol = HIGH,
+    .engine = &engines[CLOSE_ENG]
+  },
+  { //TO_SEAL
+    .switch_pin = SEALED_SWITCH_PIN,
+    .switch_pol = LOW,
+    .engine_dir_pol = HIGH,
+    .engine = &engines[SEAL_ENG]
+  },
+  {
+    .switch_pin = UNSEALED_SWITCH_PIN,
+    .switch_pol = LOW,
+    .engine_dir_pol = LOW,
+    .engine = &engines[SEAL_ENG]
+  }
+};
+
+struct Prim_Context {
+  bool active;
+  int current_inc_step; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
+  int inc_vel_end; //при инициализации задается равным inc_vel_end = length_of_buffer * 1 μs * engine.v_end
+  int current_inc_acc; //при инициализации задается равным inc_acc = length_of_buffer * 1 μs * f_acc, где f_acc = Δinc / t_acc
+  //Δinc = inc_vel_end - inc_vel_start
+  //t_acc = (v_end - v_start)/ acc
+  bool step_event;
+  long time_of_timeout;
+  Movement* how_to_move;
 };
 
 
-//инициализация структур концевиков. 0 - концевик "Закрыто", 1 - концевик "Задраено", 2 - концевик "Отдраено"
-Movement movements[3];
-
-//movements[0].switch_pin = smth;
-movements[0].switch_pin = HIGH;
-movements[0].switch_pin = HIGH;
-movemnts[0].engine = &engine_closing;
-
-//movements[1].switch_pin = smth;
-movements[1].switch_pin = HIGH;
-movements[1].switch_pin = HIGH;
-movemnts[1].engine = &engine_sealing;
-
-//movements[2].switch_pin = smth;
-movements[2].switch_pin = HIGH;
-movements[2].switch_pin = LOW;
-movemnts[2].engine = &engine_sealing;
+struct Scen_Context {
+  bool active;
+  Prim_Context (*scenario_func)(Prim_Context, Movement);
+  Scenario_State scenario_state;
+  Scenario_Type scenario_type;
+};
 
 
 struct State {
@@ -88,26 +146,10 @@ struct State {
   Scen_Context* scen_context; //Указатель на контекст сценариев. Нужен чтобы инициализировать сценарий при нажатии на кнопку.
 };
 
-struct Prim_Context {
-  bool active;
-  int current_inc_step; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
-  int inc_vel_end; //при инициализации задается равным inc_vel_end = length_of_buffer * 1 μs * engine.v_end
-  int current_inc_acc; //при инициализации задается равным inc_acc = length_of_buffer * 1 μs * f_acc, где f_acc = Δinc / t_acc
-                       //Δinc = inc_vel_end - inc_vel_start
-                       //t_acc = (v_end - v_start)/ acc
-  bool step_event;
-  long time_of_timeout;
-};
 
 
 //TODO структура управления движением от концевки до его выключения
 
-struct Scen_Context {
-  bool active;
-  Prim_Context (*scenario_func)(Prim_Context, Movement);
-  Scenario_State scenario_state;
-  Scenario_Type scenario_type;
-};
 
 
 struct Events {
@@ -135,8 +177,10 @@ bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
     previous_activation_time = 0;
     return false;
   }
-  if (previous_activation_time == 0){previous_activation_time = micros()}
-  
+  if (previous_activation_time == 0) {
+    previous_activation_time = micros();
+  }
+
   accumulator_step +=  accumulator_inc_step * (micros() - previous_activation_time);
   previous_activation_time = micros();
   separator_bit = (accumulator_step & mask_step) >> buffer_length_step;
@@ -169,7 +213,9 @@ bool phase_accumulator_acc (int accumulator_inc_acc, bool reset = false) {
     return false;
   }
 
-  if (previous_activation_time == 0){previous_activation_time = micros()}
+  if (previous_activation_time == 0) {
+    previous_activation_time = micros();
+  }
 
   accumulator_acc += accumulator_inc_acc  * (micros() - previous_activation_time);
   previous_activation_time = micros();
@@ -187,12 +233,12 @@ bool phase_accumulator_acc (int accumulator_inc_acc, bool reset = false) {
 
 
 Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
-  if (reset){
+  if (reset) {
     phase_accumulator_acc(prim_context.current_inc_acc, true);
     phase_accumulator_step(prim_context.current_inc_step, true);
-    return prim_context;  
+    return prim_context;
   }
-  
+
   if (prim_context.current_inc_step < prim_context.inc_vel_end) {
     if (phase_accumulator_acc(prim_context.current_inc_acc) == true) {
       prim_context.current_inc_step++;
@@ -208,7 +254,7 @@ Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
 
 
 
-int movement_to_switch(Prim_Context prim_context, State state, Movement movement) {
+int movement_to_switch(Prim_Context prim_context, State state) {
   //Абстрактный примитив первого уровня «Движение мотора W со скоростью X в направлении Y до срабатывания концевого выключателя Z».
   //Возвращает код результата работы. 0 - авария, 1 - успех, 2 - работа не закончена.
 
@@ -219,11 +265,11 @@ int movement_to_switch(Prim_Context prim_context, State state, Movement movement
 
   //Проверка состояния концевика.
   //TODO вынести проверку концевиков в отдельную функцию.
-  if (digitalRead(movement.switch_pin) == movement.switch_pol)
+  if (digitalRead(prim_context.how_to_move->switch_pin) == prim_context.how_to_move->switch_pol)
   {
     //Ардуино хранит цифровые сигналы не как булеву переменную, а как значения HIGH и LOW. Чему равны эти значения зависит от имплементации, логическое отрицание
     //записанного в переменную значения работать не будет. Но !digitalRead(pin) должно работать и инвертировать полученное значение.
-    digitalWrite(prim_context.movement->engine->enable_pin, LOW);
+    digitalWrite(prim_context.how_to_move->engine->enable_pin, LOW);
     return 1;
   }
 
@@ -232,15 +278,15 @@ int movement_to_switch(Prim_Context prim_context, State state, Movement movement
 
   if (state.stop_state == true)
   {
-    digitalWrite(movement.engine->enable_pin, LOW);
+    digitalWrite(prim_context.how_to_move->engine->enable_pin, LOW);
     return 0;
   }
 
   //Запись сигнала direction.
-  digitalWrite(movement.engine->dir_pin, movement.engine_dir_pol);
+  digitalWrite(prim_context.how_to_move->engine->dir_pin, prim_context.how_to_move->engine_dir_pol);
 
   //Запись сигнала step обратного текущему. Данное заклинание должно работать по причине указанной выше.
-  digitalWrite(movement.engine->step_pin, !digitalRead(movement.engine->step_pin));
+  digitalWrite(prim_context.how_to_move->engine->step_pin, !digitalRead(prim_context.how_to_move->engine->step_pin));
 
   return 2;
 }
@@ -254,7 +300,7 @@ State buttons_processing(State state, Events events, bool scenario_active) {
   static int last_signal_time_unseal = 2147483646;
   static int last_signal_time_unseal_sw = 2147483646;
   static int last_signal_time_seal_sw = 2147483646;
-  static int last_signal_time_stop_sw = 2147483646;
+  static int last_signal_time_close_sw = 2147483646;
   static const int delay_button; //задержка прочтения нажатия кнопки, в микросекундах
   static const int delay_switch;
   //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10. Возвращает активный сценарий.
@@ -263,7 +309,7 @@ State buttons_processing(State state, Events events, bool scenario_active) {
 
   //TODO переписать на events, разобраться как учитывать время. Можно хранить время для каждого сигнала, но это звучит избыточно, возможно существует решение лучше.
 
-  if (digitalRead(stop_button_pin) == HIGH) {
+  if (digitalRead(STOP_BUTTON_PIN) == HIGH) {
     if (micros() - last_signal_time_stop > delay_button) {
       last_signal_time_stop = 2147483646;
       state.stop_state = true;
@@ -271,19 +317,19 @@ State buttons_processing(State state, Events events, bool scenario_active) {
     else {
       last_signal_time_stop = micros();
     }
-
-  if (digitalRead(stop_switch_pin) == HIGH) {
-    if (micros() - last_signal_time_stop_sw > delay_button) {
-      last_signal_time_stop_sw = 2147483646;
-      state.stop_switch_state = true;
+  }
+  if (digitalRead(CLOSED_SWITCH_PIN) == HIGH) {
+    if (micros() - last_signal_time_close_sw > delay_button) {
+      last_signal_time_close_sw = 2147483646;
+      state.close_switch_state = true;
     }
     else {
-      last_signal_time_stop_sw = micros();
+      last_signal_time_close_sw = micros();
     }
 
   }
 
-  if (digitalRead(seal_switch_pin) == HIGH) {
+  if (digitalRead(SEALED_SWITCH_PIN) == HIGH) {
     if (micros() - last_signal_time_seal_sw > delay_button) {
       last_signal_time_seal_sw = 2147483646;
       state.seal_switch_state = true;
@@ -295,7 +341,7 @@ State buttons_processing(State state, Events events, bool scenario_active) {
   }
 
 
-  if (digitalRead(unseal_switch_pin) == HIGH) {
+  if (digitalRead(UNSEALED_SWITCH_PIN) == HIGH) {
     if (micros() - last_signal_time_unseal_sw > delay_button) {
       last_signal_time_unseal_sw = 2147483646;
       state.unseal_switch_state = true;
@@ -305,40 +351,42 @@ State buttons_processing(State state, Events events, bool scenario_active) {
     }
 
   }
-  
+
   if (scenario_active) {
     return state;
   }
 
-  if (digitalRead(close_button_pin) == HIGH) {
+  if (digitalRead(CLOSE_BUTTON_PIN) == HIGH) {
     if (micros() - last_signal_time_close > delay_button) {
-      last_signal_time = 2147483646;
+      last_signal_time_close = 2147483646;
       state.close_button_state = true;
-      state.scen_context->scenario_type = closing;
+      state.scen_context->scenario_type = CLOSING;
       state.scen_context->active = true;
       return state;
     }
     else {
       last_signal_time_close = micros();
     }
+  }
 
-    if (digitalRead(seal_button_pin) == HIGH) {
+  if (digitalRead(SEAL_BUTTON_PIN) == HIGH) {
     if (micros() - last_signal_time_seal > delay_button) {
-      last_signal_time = 2147483646;
+      last_signal_time_seal = 2147483646;
       state.close_button_state = true;
-      state.scen_context->scenario_type = sealing;
+      state.scen_context->scenario_type = SEALING;
       state.scen_context->active = true;
       return state;
     }
     else {
       last_signal_time_seal = micros();
     }
+  }
 
-  if (digitalRead(unseal_button_pin) == HIGH) {
+  if (digitalRead(UNSEAL_BUTTON_PIN) == HIGH) {
     if (micros() - last_signal_time_unseal > delay_button) {
-      last_signal_time = 2147483646;
+      last_signal_time_unseal = 2147483646;
       state.close_button_state = true;
-      state.scen_context->scenario_type = unsealing;
+      state.scen_context->scenario_type = UNSEALING;
       state.scen_context->active = true;
       return state;
     }
@@ -350,164 +398,166 @@ State buttons_processing(State state, Events events, bool scenario_active) {
   return state;
 }
 
-Prim_Context init_primitive(Prim_Context prim_context, Movement movement) {
-  prim_context.current_inc_step = 16 * movement.engine->v_start;
-  prim_context.inc_vel_end = 16 *  movement.engine->v_end;
-  prim_context.current_inc_acc = (16 * (prim_context.inc_vel_end - prime_context.current_inc_step)) / ((movement.engine->v_end - movement.engine->v_start) / movement.engine->acc);
-  prim_context.time_of_timeout = micros() + movement.engine->timeout;
+
+Prim_Context init_primitive(Prim_Context prim_context, Movement* movement) {
+  prim_context.how_to_move = movement;
+  prim_context.current_inc_step = 16 * prim_context.how_to_move->engine->v_start;
+  prim_context.inc_vel_end = 16 *  prim_context.how_to_move->engine->v_end;
+  prim_context.current_inc_acc = (16 * (prim_context.inc_vel_end - prim_context.current_inc_step)) / ((prim_context.how_to_move->engine->v_end - prim_context.how_to_move->engine->v_start) / prim_context.how_to_move->engine->acc);
+  prim_context.time_of_timeout = micros() + prim_context.how_to_move->engine->timeout_uS;
 
   //Запись сигнала enable.
-  digitalWrite(movement.engine->enable_pin, movement.engine->enable_pol);
+  digitalWrite(prim_context.how_to_move->engine->enable_pin, prim_context.how_to_move->engine->enable_pol);
 
   return prim_context;
 }
 
 
 
-Scen_Context scenario_sealing(Prim_Context prim_context, Scen_Context scen_context, State state) {
-   int prim_result;
+Scen_Context scenario_sealing(Prim_Context* prim_context, Scen_Context scen_context, State* state, Movement movements[3]) {
+  int prim_result;
   switch (scen_context.scenario_state)
   {
-    case (check_closed):
-      if(*state.closed_switch_state){
-        scen_context.scenario_state = init_sealed;
+    case (CHECK_CLOSED):
+      if (state->close_switch_state) {
+        scen_context.scenario_state = INIT_SEALED;
         return scen_context;
-        }
-      scen_context.scenario_state = init_unsealed;
+      }
+      scen_context.scenario_state = INIT_UNSEALED;
       return scen_context;
-    case (init_unsealed):
-      *prim_context = init_primitive(*prim_context, movements[2]);
-      scen_context.scenario_state = work_sealed;
+    case (INIT_UNSEALED):
+      *prim_context = init_primitive(*prim_context, &movements[2]);
+      scen_context.scenario_state = WORK_SEALED;
       return scen_context;
-    case (work_unsealed):
-      if (*prim_context.step_signal) {
-        prim_result = movement_to_switch(*prim_context, state);
-        *prim_context.step_signal = false;
+    case (WORK_UNSEALED):
+      if (prim_context->step_event) {
+        prim_result = movement_to_switch(*prim_context, *state);
+        prim_context->step_event = false;
       }
       switch (prim_result)
       {
         case 0: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 1: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = init_closed;
+          state->stop_state = false;
+          scen_context.scenario_state = INIT_CLOSED;
           return scen_context;
         case 2:
           return scen_context;
         default:
           return scen_context;
       }
-    case (init_closed):
-      *prim_context = init_primitive(*prim_context, movements[0]);
-      scen_context.scenario_state = work_closed;
+    case (INIT_CLOSED):
+      *prim_context = init_primitive(*prim_context, &movements[0]);
+      scen_context.scenario_state = WORK_CLOSED;
       return scen_context;
-    case (work_closed):
-      if (*prim_context.step_signal) {
-        prim_result = movement_to_switch(*prim_context, state);
-        *prim_context.step_signal = false;
+    case (WORK_CLOSED):
+      if (prim_context->step_event) {
+        prim_result = movement_to_switch(*prim_context, *state);
+        prim_context->step_event = false;
       }
       switch (prim_result)
       {
         case 0: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 1: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = init_sealed;
+          state->stop_state = false;
+          scen_context.scenario_state = INIT_SEALED;
           return scen_context;
         case 2:
           return scen_context;
         default:
           return scen_context;
       }
-    case (init_sealed):
-      *prim_context = init_primitive(*prim_context, movements[1]);
-      scen_context.scenario_state = work_sealed;
+    case (INIT_SEALED):
+      *prim_context = init_primitive(*prim_context, &movements[1]);
+      scen_context.scenario_state = WORK_SEALED;
       return scen_context;
-    case (work_sealed):
-      if (*prim_context.step_signal) {
-        prim_result = movement_to_switch(*prim_context, state);
-        *prim_context.step_signal = false;
+    case (WORK_SEALED):
+      if (prim_context->step_event) {
+        prim_result = movement_to_switch(*prim_context, *state);
+        prim_context->step_event = false;
       }
       switch (prim_result)
       {
         case 0: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 1: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 2:
           return scen_context;
         default:
           return scen_context;
       }
-    case (scenario_exit):
-      scen_context.scenario_state = none;
-      scen_context.scenario_type = none;
+    case (SCENARIO_EXIT):
+      scen_context.scenario_state = LAST_SC_STATE;
+      scen_context.scenario_type = LAST_SCENARIO;
       scen_context.active = false;
       return scen_context;
-    case (none):
+    case (LAST_SC_STATE):
       return scen_context;
     default:
       return scen_context;
   }
 }
 
-Scen_Context scenario_unsealing(Prim_Context prim_context, Scen_Context scen_context, State state) {
-   int prim_result;
+Scen_Context scenario_unsealing(Prim_Context* prim_context, Scen_Context scen_context, State* state, Movement movements[3]) {
+  int prim_result;
   switch (scen_context.scenario_state)
   {
-    case (check_unsealed):
-      if(*state.unseal_switch_state){
-        scen_context.scenario_state = scenario_exit;
+    case (CHECK_UNSEALED):
+      if (state->unseal_switch_state) {
+        scen_context.scenario_state = SCENARIO_EXIT;
         return scen_context;
-        }
-      scen_context.scenario_state = init_unsealed;
+      }
+      scen_context.scenario_state = INIT_UNSEALED;
       return scen_context;
-    case (init_unsealed):
-      *prim_context = init_primitive(*prim_context, movements[2]);
-      scen_context.scenario_state = work_sealed;
+    case (INIT_UNSEALED):
+      *prim_context = init_primitive(*prim_context, &movements[2]);
+      scen_context.scenario_state = WORK_SEALED;
       return scen_context;
-    case (work_unsealed):
-      if (*prim_context.step_signal) {
-        prim_result = movement_to_switch(*prim_context, state);
-        *prim_context.step_signal = false;
+    case (WORK_UNSEALED):
+      if (prim_context->step_event) {
+        prim_result = movement_to_switch(*prim_context, *state);
+        prim_context->step_event = false;
       }
       switch (prim_result)
       {
         case 0: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 1: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 2:
           return scen_context;
         default:
           return scen_context;
       }
-    case (scenario_exit):
-      scen_context.scenario_state = none;
-      scen_context.scenario_type = none;
+    case (SCENARIO_EXIT):
+      scen_context.scenario_state = LAST_SC_STATE;
+      scen_context.scenario_type = LAST_SCENARIO;
       scen_context.active = false;
       return scen_context;
-    case (none):
+    case (LAST_SC_STATE):
       return scen_context;
     default:
       return scen_context;
@@ -518,73 +568,77 @@ Scen_Context scenario_closing(Prim_Context* prim_context, Scen_Context scen_cont
   int prim_result;
   switch (scen_context.scenario_state)
   {
-    case (check_closed):
-      if(*state.close_switch_state){
-        scen_context.scenario_state = scenario_exit;
+    case (CHECK_CLOSED):
+      if (state->close_switch_state) {
+        scen_context.scenario_state = SCENARIO_EXIT;
         return scen_context;
-        }
-      scen_context.scenario_state = init_closed;
+      }
+      scen_context.scenario_state = INIT_CLOSED;
       return scen_context;
-    case (init_closed):
-      *prim_context = init_primitive(*prim_context, movements[0]);
-      scen_context.scenario_state = work_closed;
+    case (INIT_CLOSED):
+      *prim_context = init_primitive(*prim_context, &movements[0]);
+      scen_context.scenario_state = WORK_CLOSED;
       return scen_context;
-    case (work_closed):
-      if (*prim_context.step_signal) {
-        prim_result = movement_to_switch(*prim_context, state);
-        *prim_context.step_signal = false;
+    case (WORK_CLOSED):
+      if (prim_context->step_event) {
+        prim_result = movement_to_switch(*prim_context, *state);
+        prim_context->step_event = false;
       }
       switch (prim_result)
       {
         case 0: //отработка аварии выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 1: //отработка успеха выполнения примитива
           *prim_context = vel_accel(*prim_context, true);
-          *state.stop_state = false;
-          scen_context.scenario_state = scenario_exit;
+          state->stop_state = false;
+          scen_context.scenario_state = SCENARIO_EXIT;
           return scen_context;
         case 2:
           return scen_context;
         default:
           return scen_context;
       }
-    case (scenario_exit):
-      scen_context.scenario_state = none;
-      scen_context.scenario_type = none;
+    case (SCENARIO_EXIT):
+      scen_context.scenario_state = LAST_SC_STATE;
+      scen_context.scenario_type = LAST_SCENARIO;
       scen_context.active = false;
       return scen_context;
-    case (none):
+    case (LAST_SC_STATE):
       return scen_context;
     default:
       return scen_context;
   }
 }
 
+Prim_Context prim_context;
+
+Scen_Context scen_context;
+
+
+State state;
+
+
+Events events;
 
 
 
 
 void setup() {
 
+  scen_context.scenario_type = LAST_SCENARIO;
+  scen_context.scenario_state = LAST_SC_STATE;
+  state.scen_context = &scen_context;
+
   Serial.begin(9600);
   //define pin modes
+  
 
 }
 
 
-Prim_Context prim_context;
-
-Scen_Context scen_context;
-scen_context.scenario_type = none;
-scen_context.scenario_state = none;
-
-State state;
-state.scen_context = &scen_context;
-
-Events events;
 
 
 
@@ -603,18 +657,19 @@ void loop() {
 
   switch (scen_context.scenario_type)
   {
-    case (closing):
+    case (CLOSING):
       scen_context = scenario_closing(&prim_context, scen_context, &state, movements);
       break;
-    case (sealing):
+    case (SEALING):
       scen_context = scenario_sealing(&prim_context, scen_context, &state, movements);
       break;
-    case (unsealing):
+    case (UNSEALING):
       scen_context = scenario_unsealing(&prim_context, scen_context, &state, movements);
       break;
-    case (none):
+    case (LAST_SCENARIO):
       break;
   }
 
 
 }
+
