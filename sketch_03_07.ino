@@ -1,5 +1,7 @@
 ﻿﻿//define pins
 
+#define buffer_length (24)
+
 #ifndef HIGH
 #define HIGH 1
 #define LOW  (!HIGH)
@@ -25,16 +27,23 @@
 #define SEAL_STEP_PIN 3
 
 enum Engine_Item { CLOSE_ENG, SEAL_ENG, ENGINES_NUMBER};
-enum Movements_Item { TO_CLOSE, TO_SEAL, TO_UNSEAL, FROM_SEAL, FROM_UNSEAL, MOVEMENTS_NUMBER};
+enum Movements_Item { TO_CLOSE, TO_SEAL, TO_UNSEAL, TO_UNCLOSE, FROM_SEAL, FROM_UNSEAL, MOVEMENTS_NUMBER};
 
-enum Scenario_Type {CLOSING, SEALING, UNSEALING, LAST_SCENARIO};
+enum Scenario_Type {NONE, CLOSING, SEALING, UNSEALING, LAST_SCENARIO};
 
 enum Scenario_State {
+  NONE,
   CHECK_CLOSED,
   CHECK_UNSEALED,
   CHECK_SEALED,
   INIT_UNSEALED,
   WORK_UNSEALED,
+  INIT_UNCLOSE,
+  WORK_UNCLOSE,
+  INIT_FROM_SEAL,
+  WORK_FROM_SEAL,
+  INIT_FROM_UNSEAL,
+  WORK_FROM_UNSEAL,
   INIT_CLOSED,
   WORK_CLOSED,
   INIT_SEALED,
@@ -111,31 +120,45 @@ Movement movements[MOVEMENTS_NUMBER] = {
     .engine_dir_pol = HIGH,
     .engine = &engines[SEAL_ENG]
   },
-  {
+  {//TO_UNSEAL
     .switch_pin = UNSEALED_SWITCH_PIN,
     .switch_pol = LOW,
     .engine_dir_pol = LOW,
     .engine = &engines[SEAL_ENG]
-  }
+  },
+  {//TO_UNCLOSE
+    .switch_pin = OPENED_SWITCH_PIN,
+    .switch_pol = HIGH,
+    .engine_dir_pol = LOW,
+    .engine = &engines[CLOSE_ENG]
+  },
+  {//FROM_SEAL
+    .switch_pin = SEALED_SWITCH_PIN,
+    .switch_pol = HIGH,
+    .engine_dir_pol = LOW,
+    .engine = &engines[SEAL_ENG]
+  },
+  {//FROM_UNSEAL
+    .switch_pin = UNSEALED_SWITCH_PIN,
+    .switch_pol = HIGH,
+    .engine_dir_pol = HIGH,
+    .engine = &engines[SEAL_ENG]
+  },
 };
 
-/*typedef struct{
+typedef struct{
   long accumulator;
   int accumulator_step;
   long previous_activation_time;
-  const int buffer_length_step = 24;
-  const int mask_step = 1 << buffer_length_step;
+  const int mask_step = 1 << buffer_length;
   bool previous_separator_bit_step;
-  bool separator_bit;
-} Accumulator_Context;*/
+} Accumulator_Context;
 
 typedef struct  {
   bool active;
-  int current_inc_step; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
-  int inc_vel_end; //при инициализации задается равным inc_vel_end = length_of_buffer * 1 μs * engine.v_end
-  int current_inc_acc; //при инициализации задается равным inc_acc = length_of_buffer * 1 μs * f_acc, где f_acc = Δinc / t_acc
-  //Δinc = inc_vel_end - inc_vel_start
-  //t_acc = (v_end - v_start)/ acc
+  
+  int inc_vel_end; 
+  int current_inc_acc; 
   bool step_event;
   long time_of_timeout;
   Movement* how_to_move;
@@ -167,8 +190,6 @@ typedef struct {
 
 
 
-//TODO структура управления движением от концевки до его выключения
-
 
 
 typedef struct  {
@@ -184,92 +205,77 @@ typedef struct  {
 
 void vel_accel (Prim_Context* prim_context, bool reset = false); //Функция регулирующая запуск аккумуляторов. Генерирует step_event
 int movement_to_switch(Prim_Context* prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
-void init_primitive(Prim_Context* prim_context, Movement* movement); //Функция инициализирующая аккумуляторы. 
+void init_primitive(Prim_Context* prim_context, Movement* movement); //Функция инициализирующая примитив и аккумуляторы. 
+void stop_primitive(Prim_Context* prim_context);
 
-bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
-  //Фазовый аккумулятор регулирующий ход мотора. Начальный инкремент соответствует начальной скорости, увеличивается аккумулятором ускорения.
-  static long accumulator_step;
-  static long previous_activation_time = micros();
-  static const int buffer_length_step = 24;
-  static const int mask_step = 1 << buffer_length_step;
-  static bool previous_separator_bit_step;
+void init_primitive(Prim_Context* prim_context, Movement* movement) {
+
+  double multiplier = (2l<<buffer_length_acc)/1e6;
+  prim_context->how_to_move = movement;
+  prim_context->accum_vel->accumulator_step = multiplier * movement->engine->v_start; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
+  prim_context->inc_vel_end = multiplier *  movement->engine->v_end; //при инициализации задается равным inc_vel_end = length_of_buffer * 1 μs * engine.v_end
+  prim_context->accum_acc->accumulator_step = multiplier  * movement->engine->acc  //при инициализации задается равным inc_acc = length_of_buffer * 1 μs * f_acc, где f_acc = Δinc / t_acc                                                                              
+    * (prim_context->inc_vel_end - prim_context->current_inc_step)                //Δinc = inc_vel_end - inc_vel_start
+    / ((movement->engine->v_end - movement->engine->v_start));                    //t_acc = (v_end - v_start)/ acc
+  prim_context->time_of_timeout = micros() + movement->engine->timeout_uS;
+  prim_context->active = true;
+  prim_context->prim_state = WORKING;
+  //Запись сигнала enable.
+  digitalWrite(movement->engine->enable_pin, movement->engine->enable_pol);
+  //Запись сигнала direction. 
+  digitalWrite(movement->engine->dir_pin, movement->engine_dir_pol);
+}
+
+void stop_primitive(Prim_Context* prim_context){
+  if(prim_context->how_to_move->engine->enable_pol == HIGH)
+        digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
+  else
+        digitalWrite(prim_context->how_to_move->engine->enable_pin, HIGH);
+  prim_context->active = 0;
+};
+
+
+bool phase_accumulator (Accumulator_Context* accumulator_context) {
+  //Фазовый аккумулятор регулирующий ход мотора. 
   bool separator_bit;
 
-  if (reset = true) {
-    accumulator_step = 0;
-    previous_activation_time = 0;
+  /*if (reset = true) { Более не требуется. Обнуление происходит инициализацией.
+    accumulator_context->accumulator_step = 0;
+    accumulator_context->previous_activation_time = 0;
     return false;
   }
   if (previous_activation_time == 0) {
     previous_activation_time = micros();
-  }
+  }*/
 
-  accumulator_step +=  accumulator_inc_step * (micros() - previous_activation_time);
+  accumulator_context->accumulator +=  accumulator_context->accumulator_inc * (micros() - accumulator_context->previous_activation_time);
   previous_activation_time = micros();
-  separator_bit = (accumulator_step & mask_step) >> buffer_length_step;
+  accumulator_context->separator_bit = (accumulator_context->accumulator_step & accumulator_context->mask_step) >> buffer_length;
 
-  if (separator_bit != previous_separator_bit_step) {
-    previous_separator_bit_step = separator_bit;
+  if (separator_bit != accumulator_context->previous_separator_bit_step) {
+    accumulator_context->previous_separator_bit_step = separator_bit;
     return true;
   }
 
   return false;
-
-}
-
-bool phase_accumulator_acc (int accumulator_inc_acc, bool reset = false) {
-  //Фазовый аккумулятор регулирующий ускорение. Величина инкремента постоянна и высчитывается двумя способами:
-  //Если инкремент соответствующий начальной скорости мотора незначительно больше инкремента ускорения, то можно использовать accumulator_inc_acc = Engine.v_start
-  //Иначе его можно вычислить как (Engine.v_end - Engine.v_start)/t, где t - время ускорения от начальной до конечной скорости.
-
-  static long accumulator_acc;
-  static long previous_activation_time = micros();
-//  static const int buffer_length_acc = 24;
-  static const int mask_acc = 1 << buffer_length_acc;
-  bool separator_bit;
-  static bool previous_separator_bit_acc;
-
-
-  if (reset == true) {
-    accumulator_acc = 0;
-    previous_activation_time = 0;
-    return false;
-  }
-
-  if (previous_activation_time == 0) {
-    previous_activation_time = micros();
-  }
-
-  accumulator_acc += accumulator_inc_acc  * (micros() - previous_activation_time);
-  previous_activation_time = micros();
-
-  separator_bit = (accumulator_acc & mask_acc) >> buffer_length_acc;
-
-  if (separator_bit != previous_separator_bit_acc) {
-    previous_separator_bit_acc = separator_bit;
-    return true;
-  }
-
-  return false;
-
 }
 
 
-void vel_accel (Prim_Context* prim_context, bool reset = false) {
+void vel_accel (Prim_Context* prim_context) {
   if(!prim_context->active) return;
-  if (reset) {
-    phase_accumulator_acc(prim_context->current_inc_acc, true);
-    phase_accumulator_step(prim_context->current_inc_step, true);
+  /*if (reset) {
+    phase_accumulator(prim_context->current_inc_acc);
+    phase_accumulator(prim_context->current_inc_step;
     return prim_context;
-  }
-
-  if (prim_context->current_inc_step < prim_context->inc_vel_end) {
-    if (phase_accumulator_acc(prim_context->current_inc_acc) == true) {
-      prim_context->current_inc_step++;
+  }*/
+  //проверка аккумулятора ускорения. При успехе инкрементирует инкремент аккумулятора хода.
+  if (prim_context->accum_vel->current_inc < prim_context->inc_vel_end) {
+    if (phase_accumulator(prim_context->accum_acc) == true) {
+      prim_context->accum_vel->current_inc++;
     }
   }
-  //проверка аккумулятора хода. Запускается всегда, при успехе создает событие step_event
-  if (phase_accumulator_step(prim_context->current_inc_step) == true) {
+  //проверка аккумулятора хода. Запускается всегда, при успехе создает событие step_event.
+  if (phase_accumulator(prim_context->accum_vel) == true) {
     prim_context->step_event = true;
   }
 }
@@ -287,7 +293,8 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   //Проверка таймаута
   if (prim_context->time_of_timeout - micros() < 0) {
     prim_context->prim_state = STOPPED;
-    //goto stop;
+    stop_primitive(prim_context);
+    return;
   }
 
   //Проверка состояния концевика.
@@ -295,20 +302,19 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   if (digitalRead(prim_context->how_to_move->switch_pin) == prim_context->how_to_move->switch_pol)
   {
     prim_context->prim_state = SUCCESS;
-    //goto stop;
+    stop_primitive(prim_context);
+    return;
   }
 
 
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
   if (state->stop_state == true)
   {
-    state->stop_state = false;
     prim_context->prim_state = STOPPED;
-    //goto stop;
+    stop_primitive(prim_context);
+    return;
   }
 
-  //Запись сигнала direction. 
-  // это должно быть сделоно при инициализации  1 раз!!!digitalWrite(prim_context->how_to_move->engine->dir_pin, prim_context->how_to_move->engine_dir_pol);
   if(prim_context->prim_state == WORKING){
     if (prim_context->step_event) {
         prim_context->step_event = false;
@@ -324,17 +330,10 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   //  prim_context->prim_state = WORKING;
     return;
   }
-stop:
-  if(prim_context->how_to_move->engine->enable_pol == HIGH)
-        digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
-  else
-        digitalWrite(prim_context->how_to_move->engine->enable_pin, HIGH);
-  prim_context->active = 0;
 }
 
 //перенести назначение и инициализацию сценариев в диспетчер сценариев!!!!!
 State buttons_processing(State state, Events events, bool scenario_active) {
-  //TODO переписать на работу со структурами
   static int last_signal_time_stop = 2147483646;
   static int last_signal_time_seal = 2147483646;
   static int last_signal_time_close = 2147483646;
@@ -439,29 +438,9 @@ State buttons_processing(State state, Events events, bool scenario_active) {
   return state;
 }
 
-//TODO ввести структуру для аккумулятора и вынести управление временем и обнуление в инициализацию
-void init_primitive(Prim_Context* prim_context, Movement* movement) {
+//TODO добавить движение от концевиков, привести сценарии в человеческий вид.
 
-  double multiplier = (2l<<buffer_length_acc)/1e6;
-  prim_context->how_to_move = movement;
-  prim_context->current_inc_step = multiplier * movement->engine->v_start;
-  prim_context->inc_vel_end = multiplier *  movement->engine->v_end;
-  prim_context->current_inc_acc = multiplier  * movement->engine->acc
-    * (prim_context->inc_vel_end - prim_context->current_inc_step) 
-    / ((movement->engine->v_end - movement->engine->v_start));
-  prim_context->time_of_timeout = micros() + movement->engine->timeout_uS;
-  prim_context->active = true;
-  prim_context->prim_state = WORKING;
-  //Запись сигнала enable.
-  digitalWrite(movement->engine->enable_pin, movement->engine->enable_pol);
-  //Запись сигнала direction. 
-  digitalWrite(movement->engine->dir_pin, movement->engine_dir_pol);
-}
-
-
-//TODO вынести исполнение примитива за пределы сценария
 void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
-  int prim_result;
   switch (scen_context->scenario_state)
   {
     case (CHECK_CLOSED):
@@ -482,12 +461,10 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
-          *prim_context = vel_accel(*prim_context, true);
-          state->stop_state = false;
+          
           scen_context->scenario_state = SCENARIO_EXIT;
           break;
         case SUCCESS: //отработка успеха выполнения примитива
-          *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
           scen_context->scenario_state = INIT_CLOSED;
           break;
