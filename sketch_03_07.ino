@@ -5,7 +5,6 @@
 #define LOW  (!HIGH)
 #endif
 
-#define buffer_length_acc (24)
 #define STOP_BUTTON_PIN 2
 
 #define CLOSE_BUTTON_PIN 1
@@ -120,6 +119,16 @@ Movement movements[MOVEMENTS_NUMBER] = {
   }
 };
 
+/*typedef struct{
+  long accumulator;
+  int accumulator_step;
+  long previous_activation_time;
+  const int buffer_length_step = 24;
+  const int mask_step = 1 << buffer_length_step;
+  bool previous_separator_bit_step;
+  bool separator_bit;
+} Accumulator_Context;*/
+
 typedef struct  {
   bool active;
   int current_inc_step; //при инициализации задается равным inc_vel_start = length_of_buffer * 1 μs * engine.v_start
@@ -131,6 +140,8 @@ typedef struct  {
   long time_of_timeout;
   Movement* how_to_move;
   Prim_State prim_state;
+  Accumulator_Context* accum_vel;
+  Accumulator_Context* accum_acc;
 } Prim_Context;
 
 
