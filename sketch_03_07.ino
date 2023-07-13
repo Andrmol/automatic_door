@@ -1,10 +1,11 @@
-﻿//define pins
+﻿﻿//define pins
 
 #ifndef HIGH
 #define HIGH 1
 #define LOW  (!HIGH)
 #endif
 
+#define buffer_length_acc (24)
 #define STOP_BUTTON_PIN 2
 
 #define CLOSE_BUTTON_PIN 1
@@ -170,9 +171,9 @@ typedef struct  {
 } Events;
 
 
-Prim_Context vel_accel (Prim_Context prim_context, bool reset = false); //Функция регулирующая запуск аккумуляторов. Генерирует step_event
-int movement_to_switch(Prim_Context prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
-Prim_Context init_primitive(Prim_Context prim_context, Movement* movement); //Функция инициализирующая аккумуляторы. 
+void vel_accel (Prim_Context* prim_context, bool reset = false); //Функция регулирующая запуск аккумуляторов. Генерирует step_event
+int movement_to_switch(Prim_Context* prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
+void init_primitive(Prim_Context* prim_context, Movement* movement); //Функция инициализирующая аккумуляторы. 
 
 bool phase_accumulator_step (int accumulator_inc_step, bool reset = false) {
   //Фазовый аккумулятор регулирующий ход мотора. Начальный инкремент соответствует начальной скорости, увеличивается аккумулятором ускорения.
@@ -212,7 +213,7 @@ bool phase_accumulator_acc (int accumulator_inc_acc, bool reset = false) {
 
   static long accumulator_acc;
   static long previous_activation_time = micros();
-  static const int buffer_length_acc = 24;
+//  static const int buffer_length_acc = 24;
   static const int mask_acc = 1 << buffer_length_acc;
   bool separator_bit;
   static bool previous_separator_bit_acc;
@@ -243,23 +244,23 @@ bool phase_accumulator_acc (int accumulator_inc_acc, bool reset = false) {
 }
 
 
-Prim_Context vel_accel (Prim_Context prim_context, bool reset = false) {
+void vel_accel (Prim_Context* prim_context, bool reset = false) {
+  if(!prim_context->active) return;
   if (reset) {
-    phase_accumulator_acc(prim_context.current_inc_acc, true);
-    phase_accumulator_step(prim_context.current_inc_step, true);
+    phase_accumulator_acc(prim_context->current_inc_acc, true);
+    phase_accumulator_step(prim_context->current_inc_step, true);
     return prim_context;
   }
 
-  if (prim_context.current_inc_step < prim_context.inc_vel_end) {
-    if (phase_accumulator_acc(prim_context.current_inc_acc) == true) {
-      prim_context.current_inc_step++;
+  if (prim_context->current_inc_step < prim_context->inc_vel_end) {
+    if (phase_accumulator_acc(prim_context->current_inc_acc) == true) {
+      prim_context->current_inc_step++;
     }
   }
   //проверка аккумулятора хода. Запускается всегда, при успехе создает событие step_event
-  if (phase_accumulator_step(prim_context.current_inc_step) == true) {
-    prim_context.step_event = true;
+  if (phase_accumulator_step(prim_context->current_inc_step) == true) {
+    prim_context->step_event = true;
   }
-  return prim_context;
 }
 
 
@@ -269,44 +270,58 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   //Абстрактный примитив первого уровня «Движение мотора W со скоростью X в направлении Y до срабатывания концевого выключателя Z».
   //Возвращает код результата работы. 0 - авария, 1 - успех, 2 - работа не закончена.
 
+  if (prim_context->active == 0) {
+    return;
+  }
   //Проверка таймаута
   if (prim_context->time_of_timeout - micros() < 0) {
     prim_context->prim_state = STOPPED;
-    return;
+    //goto stop;
   }
 
   //Проверка состояния концевика.
   //TODO вынести проверку концевиков в отдельную функцию.
   if (digitalRead(prim_context->how_to_move->switch_pin) == prim_context->how_to_move->switch_pol)
   {
-    //Ардуино хранит цифровые сигналы не как булеву переменную, а как значения HIGH и LOW. Чему равны эти значения зависит от имплементации, логическое отрицание
-    //записанного в переменную значения работать не будет. Но !digitalRead(pin) должно работать и инвертировать полученное значение.
-    digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
     prim_context->prim_state = SUCCESS;
-    return;
+    //goto stop;
   }
 
 
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
-
   if (state->stop_state == true)
   {
-    digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
+    state->stop_state = false;
     prim_context->prim_state = STOPPED;
-    return;
+    //goto stop;
   }
 
-  //Запись сигнала direction.
-  digitalWrite(prim_context->how_to_move->engine->dir_pin, prim_context->how_to_move->engine_dir_pol);
-
+  //Запись сигнала direction. 
+  // это должно быть сделоно при инициализации  1 раз!!!digitalWrite(prim_context->how_to_move->engine->dir_pin, prim_context->how_to_move->engine_dir_pol);
+  if(prim_context->prim_state == WORKING){
+    if (prim_context->step_event) {
+        prim_context->step_event = false;
+        //Запись сигнала step обратного текущему.
+        if(digitalRead(prim_context->how_to_move->engine->step_pin) == HIGH)
+          digitalWrite(prim_context->how_to_move->engine->step_pin, LOW);
+        else
+          digitalWrite(prim_context->how_to_move->engine->step_pin, HIGH);
   //Запись сигнала step обратного текущему. Данное заклинание должно работать по причине указанной выше.
-  digitalWrite(prim_context->how_to_move->engine->step_pin, !digitalRead(prim_context->how_to_move->engine->step_pin));
+  //      digitalWrite(prim_context->how_to_move->engine->step_pin, !digitalRead(prim_context->how_to_move->engine->step_pin));
+    }
 
-  prim_context->prim_state = WORKING;
-  return;
+  //  prim_context->prim_state = WORKING;
+    return;
+  }
+stop:
+  if(prim_context->how_to_move->engine->enable_pol == HIGH)
+        digitalWrite(prim_context->how_to_move->engine->enable_pin, LOW);
+  else
+        digitalWrite(prim_context->how_to_move->engine->enable_pin, HIGH);
+  prim_context->active = 0;
 }
 
-
+//перенести назначение и инициализацию сценариев в диспетчер сценариев!!!!!
 State buttons_processing(State state, Events events, bool scenario_active) {
   //TODO переписать на работу со структурами
   static int last_signal_time_stop = 2147483646;
@@ -414,17 +429,22 @@ State buttons_processing(State state, Events events, bool scenario_active) {
 }
 
 //TODO ввести структуру для аккумулятора и вынести управление временем и обнуление в инициализацию
-Prim_Context init_primitive(Prim_Context prim_context, Movement* movement) {
-  prim_context.how_to_move = movement;
-  prim_context.current_inc_step = 16 * prim_context.how_to_move->engine->v_start;
-  prim_context.inc_vel_end = 16 *  prim_context.how_to_move->engine->v_end;
-  prim_context.current_inc_acc = (16 * (prim_context.inc_vel_end - prim_context.current_inc_step)) / ((prim_context.how_to_move->engine->v_end - prim_context.how_to_move->engine->v_start) / prim_context.how_to_move->engine->acc);
-  prim_context.time_of_timeout = micros() + prim_context.how_to_move->engine->timeout_uS;
+void init_primitive(Prim_Context* prim_context, Movement* movement) {
 
+  double multiplier = (2l<<buffer_length_acc)/1e6;
+  prim_context->how_to_move = movement;
+  prim_context->current_inc_step = multiplier * movement->engine->v_start;
+  prim_context->inc_vel_end = multiplier *  movement->engine->v_end;
+  prim_context->current_inc_acc = multiplier  * movement->engine->acc
+    * (prim_context->inc_vel_end - prim_context->current_inc_step) 
+    / ((movement->engine->v_end - movement->engine->v_start));
+  prim_context->time_of_timeout = micros() + movement->engine->timeout_uS;
+  prim_context->active = true;
+  prim_context->prim_state = WORKING;
   //Запись сигнала enable.
-  digitalWrite(prim_context.how_to_move->engine->enable_pin, prim_context.how_to_move->engine->enable_pol);
-
-  return prim_context;
+  digitalWrite(movement->engine->enable_pin, movement->engine->enable_pol);
+  //Запись сигнала direction. 
+  digitalWrite(movement->engine->dir_pin, movement->engine_dir_pol);
 }
 
 
@@ -441,7 +461,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = INIT_UNSEALED;
       break;
     case (INIT_UNSEALED):
-      *prim_context = init_primitive(*prim_context, &movements[2]);
+      init_primitive(prim_context, &movements[2]);
       scen_context->scenario_state = WORK_SEALED;
       break;
     case (WORK_UNSEALED):
@@ -539,7 +559,7 @@ void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, 
       scen_context->scenario_state = INIT_UNSEALED;
       break;
     case (INIT_UNSEALED):
-      *prim_context = init_primitive(*prim_context, &movements[2]);
+      init_primitive(prim_context, &movements[2]);
       scen_context->scenario_state = WORK_SEALED;
       break;
     case (WORK_UNSEALED):
@@ -584,26 +604,20 @@ void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, St
         break;
       }
       scen_context->scenario_state = INIT_CLOSED;
-      break;
     case (INIT_CLOSED):
-      *prim_context = init_primitive(*prim_context, &movements[0]);
+      init_primitive(prim_context, &movements[0]);
       scen_context->scenario_state = WORK_CLOSED;
       break;
     case (WORK_CLOSED):
-      if (prim_context->step_event) {
-        prim_context->step_event = false;
-      }
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
-          *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context->scenario_state = SCENARIO_EXIT;
+          scen_context->scenario_state = SCENARIO_EXIT;// каша в голове
           break;
         case SUCCESS: //отработка успеха выполнения примитива
-          *prim_context = vel_accel(*prim_context, true);
           state->stop_state = false;
-          scen_context->scenario_state = SCENARIO_EXIT;
+          scen_context->scenario_state = SCENARIO_EXIT;// каша в голове
           break;
         case WORKING:
           break;
@@ -621,9 +635,8 @@ void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, St
       break;
   }
 }
-
+//initialisation!!!!!
 Prim_Context prim_context;
-
 Scen_Context scen_context;
 
 
@@ -661,7 +674,7 @@ void loop() {
 
   //TODO добавить функцию приведения состояния лампочек в соответствие state
 
-  prim_context = vel_accel(prim_context);
+  vel_accel(&prim_context);
 
   movement_to_switch(&prim_context, &state);
 
