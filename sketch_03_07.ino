@@ -1,6 +1,9 @@
 ﻿//define pins
 
 #define buffer_length (24)
+#define blinking_duration (100) // Длительность моргания лампочек в миллисекундах.
+#define blinking_frequency  (5) // Период моргания лампочек в миллисекундах.
+
 
 #ifndef HIGH
 #define HIGH 1
@@ -11,7 +14,7 @@
 
 #define CLOSE_BUTTON_PIN 1
 #define CLOSED_SWITCH_PIN 3
-#define OPENED_SWITCH_PIN 3
+#define UNCLOSED_SWITCH_PIN 3
 
 #define SEAL_BUTTON_PIN 3
 #define SEALED_SWITCH_PIN 3
@@ -26,10 +29,14 @@
 #define CLOSE_STEP_PIN 3
 #define SEAL_STEP_PIN 3
 
+#define CLOSE_LAMP_PIN 3
+#define SEAL_LAMP_PIN 3
+#define UNSEAL_LAMP_PIN 3
+
 enum Engine_Item { CLOSE_ENG, SEAL_ENG, ENGINES_NUMBER};
 enum Movements_Item { TO_CLOSE, TO_SEAL, TO_UNSEAL, TO_UNCLOSE, FROM_SEAL, FROM_UNSEAL, MOVEMENTS_NUMBER};
 
-enum Scenario_Type {NONE, CLOSING, SEALING, UNSEALING, LAST_SCENARIO};
+enum Scenario_Type {NONE, STARTUP, CLOSING, SEALING, UNSEALING, LAST_SCENARIO};
 
 enum Scenario_State {
   CHECK_CLOSED,
@@ -126,7 +133,7 @@ Movement movements[MOVEMENTS_NUMBER] = {
     .engine = &engines[SEAL_ENG]
   },
   {//TO_UNCLOSE, 3
-    .switch_pin = OPENED_SWITCH_PIN,
+    .switch_pin = UNCLOSED_SWITCH_PIN,
     .switch_pol = HIGH,
     .engine_dir_pol = LOW,
     .engine = &engines[CLOSE_ENG]
@@ -179,11 +186,18 @@ typedef struct {
   //структура состояния кнопок и концевиков. активной может быть только одна кнопка. хранить состояние всех кнопок избыточно, достаточно иметь одну переменную хранящую активную кнопку.
   bool stop_state;
   bool close_switch_state;
+  bool unclose_switch_state;
   bool close_button_state;
   bool seal_switch_state;
   bool seal_button_state;
   bool unseal_switch_state;
-  bool unseal_button_state; //Указатель на контекст сценариев. Нужен чтобы инициализировать сценарий при нажатии на кнопку.
+  bool unseal_button_state;
+  bool close_light_blinking;
+  long close_light_blinking_timeout;
+  bool seal_light_blinking;
+  long seal_light_blinking_timeout;
+  bool unseal_light_blinking;
+  long unseal_light_blinking_timeout;   
 } State;
 
 
@@ -191,18 +205,19 @@ typedef struct {
 
 
 typedef struct  {
-  bool button_close_event;
-  bool button_unseal_event;
-  bool button_seal_event;
-  bool button_stop_event;
-  bool switch_stop_event;
-  bool switch_seal_event;
-  bool switch_unseal_event;
+  byte button_close_event;
+  byte button_unseal_event;
+  byte button_seal_event;
+  byte button_stop_event;
+  byte switch_close_event;
+  byte switch_unclose_event;
+  byte switch_seal_event;
+  byte switch_unseal_event;
 } Events;
 
 
 void vel_accel (Prim_Context* prim_context); //Функция регулирующая запуск аккумуляторов. Генерирует step_event
-int movement_to_switch(Prim_Context* prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
+void movement_to_switch(Prim_Context* prim_context, State state); //Абстрактный примитив движения в сторону выключателя. Осуществляет движение мотором
 void init_primitive(Prim_Context* prim_context, Movement* movement); //Функция инициализирующая примитив и аккумуляторы. 
 void stop_primitive(Prim_Context* prim_context);
 
@@ -296,14 +311,14 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   }
 
   //Проверка состояния концевика.
-  //TODO вынести проверку концевиков в отдельную функцию.
+  /* Проверка концевика вынесена в сценарий.
   if (digitalRead(prim_context->how_to_move->switch_pin) == prim_context->how_to_move->switch_pol)
   {
     prim_context->prim_state = SUCCESS;
     stop_primitive(prim_context);
     return;
   }
-
+  */
 
   //Проверка аварийного стопа. Сброс состояния аварийного стопа происходит на выходе из функции.
   if (state->stop_state == true)
@@ -330,109 +345,265 @@ void movement_to_switch(Prim_Context* prim_context, State* state) {
   }
 }
 
-//перенести назначение и инициализацию сценариев в диспетчер сценариев!!!!!
 void buttons_processing(State* state, Events* events, bool scenario_active) {
-  static int last_signal_time_stop = 2147483646;
-  static int last_signal_time_seal = 2147483646;
-  static int last_signal_time_close = 2147483646;
-  static int last_signal_time_unseal = 2147483646;
-  static int last_signal_time_unseal_sw = 2147483646;
-  static int last_signal_time_seal_sw = 2147483646;
-  static int last_signal_time_close_sw = 2147483646;
+  static long signal_timeout_stop;
+  static long signal_timeout_close;
+  static long signal_timeout_unclose;
+  static long signal_timeout_seal;
+  static long signal_timeout_unseal;
+  static long signal_timeout_close_button;
+  static long signal_timeout_seal_button;
+  static long signal_timeout_unseal_button;
   static const int delay_button; //задержка прочтения нажатия кнопки, в микросекундах
   static const int delay_switch;
   //функция обработки нажатых кнопок с учетом дребезга. для кнопок задержка +- 20 милисекунд, для концевиков может быть меньше, +-10. Возвращает активный сценарий.
 
   //если есть активный сценарий, то даже не смотреть на кнопки
 
-  //TODO переписать на events, разобраться как учитывать время. Можно хранить время для каждого сигнала, но это звучит избыточно, возможно существует решение лучше.
-
-  if (digitalRead(STOP_BUTTON_PIN) == HIGH) {
-    if (micros() - last_signal_time_stop > delay_button) {
-      last_signal_time_stop = 2147483646;
-      state->stop_state = true;
+  if (digitalRead(STOP_BUTTON_PIN) == events->button_stop_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->button_stop_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(!state->stop_state){ //Если датчик возвращает 1 и уже записан как 1, то нет смысла проверять таймер.
+        if(signal_timeout_stop > millis()){ //Если таймер прошел, то можно записать сигнал. 
+        state->stop_state = true;
+      }
+      }
     }
-    else {
-      last_signal_time_stop = micros();
+  else{
+    if(events->button_stop_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_stop = millis() + delay_switch;
+      events->button_stop_event = HIGH;
+    }
+    else{ //Если сигнал изменился с 1 на 0
+      events->button_stop_event = LOW;
     }
   }
-  if (digitalRead(CLOSED_SWITCH_PIN) == HIGH) {
-    if (micros() - last_signal_time_close_sw > delay_button) {
-      last_signal_time_close_sw = 2147483646;
-      state->close_switch_state = true;
-    }
-    else {
-      last_signal_time_close_sw = micros();
-    }
-
   }
 
-  if (digitalRead(SEALED_SWITCH_PIN) == HIGH) {
-    if (micros() - last_signal_time_seal_sw > delay_button) {
-      last_signal_time_seal_sw = 2147483646;
-      state->seal_switch_state = true;
+  if (digitalRead(CLOSED_SWITCH_PIN) == events->switch_close_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->switch_close_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(!state->close_switch_state){ //Если датчик возвращает 1 и уже записан как 1, то нет смысла проверять таймер.
+        if(signal_timeout_close > millis()){ //Если таймер прошел, то можно записать сигнал. 
+        state->close_switch_state = true;
+      }
+      }
     }
-    else {
-      last_signal_time_seal_sw = micros();
+  else{
+    if(events->switch_close_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_close = millis() + delay_switch;
+      events->switch_close_event = HIGH;
     }
+    else{ //Если сигнал изменился с 1 на 0
+      events->switch_close_event = LOW;
+    }
+  }
+  }
 
+  if (digitalRead(UNCLOSED_SWITCH_PIN) == events->switch_unclose_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->switch_unclose_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(!state->unclose_switch_state){ //Если датчик возвращает 1 и уже записан как 1, то нет смысла проверять таймер.
+        if(signal_timeout_unclose > millis()){ //Если таймер прошел, то можно записать сигнал. 
+        state->unclose_switch_state = true;
+      }
+      }
+    }
+  else{
+    if(events->switch_unclose_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_unclose = millis() + delay_switch;
+      events->switch_unclose_event = HIGH;
+    }
+    else{ //Если сигнал изменился с 1 на 0
+      events->switch_unclose_event = LOW;
+    }
+  }
+  }
+
+  if (digitalRead(SEALED_SWITCH_PIN) == events->switch_seal_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->switch_seal_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(!state->seal_switch_state){ //Если датчик возвращает 1 и уже записан как 1, то нет смысла проверять таймер.
+        if(signal_timeout_seal > millis()){ //Если таймер прошел, то можно записать сигнал. 
+        state->seal_switch_state = true;
+      }
+      }
+    }
+  else{
+    if(events->switch_seal_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_seal = millis() + delay_switch;
+      events->switch_seal_event = HIGH;
+    }
+    else{ //Если сигнал изменился с 1 на 0
+      events->switch_seal_event = LOW;
+    }
+  }
   }
 
 
-  if (digitalRead(UNSEALED_SWITCH_PIN) == HIGH) {
-    if (micros() - last_signal_time_unseal_sw > delay_button) {
-      last_signal_time_unseal_sw = 2147483646;
-      state->unseal_switch_state = true;
+  if (digitalRead(UNSEALED_SWITCH_PIN) == events->switch_unseal_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->switch_unseal_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(!state->unseal_switch_state){ //Если датчик возвращает 1 и уже записан как 1, то нет смысла проверять таймер.
+        if(signal_timeout_unseal > millis()){ //Если таймер прошел, то можно записать сигнал. 
+        state->unseal_switch_state = true;
+      }
+      }
     }
-    else {
-      last_signal_time_unseal_sw = micros();
+  else{
+    if(events->switch_unseal_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_unseal = millis() + delay_switch;
+      events->switch_unseal_event = HIGH;
     }
-
+    else{ //Если сигнал изменился с 1 на 0
+      events->switch_unseal_event = LOW;
+    }
+  }
   }
 
   if (scenario_active) {
     return state;
   }
 
-  if (digitalRead(CLOSE_BUTTON_PIN) == HIGH) {
-    if (micros() - last_signal_time_close > delay_button) {
-      last_signal_time_close = 2147483646;
+  if (digitalRead(CLOSE_BUTTON_PIN) == events->button_close_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->button_close_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(signal_timeout_close_button > millis()){ //Если таймер прошел, то можно записать сигнал. 
       state->close_button_state = true;
-      return state;
+      }
     }
-    else {
-      last_signal_time_close = micros();
+  else{
+    if(events->button_close_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_close_button = millis() + delay_button;
+      events->button_close_event = HIGH;
+    }
+    else{ //Если сигнал изменился с 1 на 0
+      events->button_close_event = LOW;
     }
   }
-
-  if (digitalRead(SEAL_BUTTON_PIN) == HIGH) {
-    if (micros() - last_signal_time_seal > delay_button) {
-      last_signal_time_seal = 2147483646;
-      state->close_button_state = true;
-      return state;
-    }
-    else {
-      last_signal_time_seal = micros();
-    }
   }
 
-  if (digitalRead(UNSEAL_BUTTON_PIN) == HIGH) {
-    if (micros() - last_signal_time_unseal > delay_button) {
-      last_signal_time_unseal = 2147483646;
-      state->close_button_state = true;
-      return state;
+  if (digitalRead(SEAL_BUTTON_PIN) == events->button_seal_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->button_seal_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(signal_timeout_seal_button > millis()){ //Если таймер прошел, то можно записать сигнал. 
+      state->seal_button_state = true;
+      }
     }
-    else {
-      last_signal_time_unseal = micros();
+  else{
+    if(events->button_seal_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_seal_button = millis() + delay_button;
+      events->button_seal_event = HIGH;
     }
-
+    else{ //Если сигнал изменился с 1 на 0
+      events->button_seal_event = LOW;
+    }
   }
-  return state;
+  }
+
+  if (digitalRead(UNSEAL_BUTTON_PIN) == events->button_unseal_event){ //Проверка текущего состояния с предыдущим записанным.
+    if(events->button_unseal_event == HIGH){ //Если текущее состояние совпадает с предыдущим и равно 1, то проверить таймер
+      if(signal_timeout_unseal_button > millis()){ //Если таймер прошел, то можно записать сигнал. 
+      state->unseal_button_state = true;
+      }
+    }
+  else{
+    if(events->button_unseal_event == LOW){ //Если сигнал изменился с 0 на 1, то запускаю таймер
+      signal_timeout_unseal_button = millis() + delay_button;
+      events->button_unseal_event = HIGH;
+    }
+    else{ //Если сигнал изменился с 1 на 0
+      events->button_unseal_event = LOW;
+    }
+  }
+  }
 }
 
-//TODO добавить движение от концевиков, привести сценарии в человеческий вид.
+void indication (State* state){
+  static long previous_close_blinking_time;
+  static long current_close_blinking_time;
+  static byte previous_close_blinking_state;
 
-void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
+  static long previous_seal_blinking_time;
+  static long current_seal_blinking_time;
+  static byte previous_seal_blinking_state;
+
+  static long previous_unseal_blinking_time;
+  static long current_unseal_blinking_time;
+  static byte previous_unseal_blinking_state;
+
+  if(state->close_light_blinking){
+     current_close_blinking_time = millis();
+     if(current_close_blinking_time > state->close_light_blinking_timeout){
+      state->close_light_blinking = false; 
+     }
+     else{
+      if (current_close_blinking_time - previous_close_blinking_time >= blinking_frequency){
+        if (previous_close_blinking_state == HIGH){
+          digitalWrite(CLOSE_LAMP_PIN, LOW);
+          previous_close_blinking_state = LOW;
+          previous_close_blinking_time = current_close_blinking_time;
+        }
+        else{
+          digitalWrite(CLOSE_LAMP_PIN, HIGH);
+          previous_close_blinking_state = HIGH;
+          previous_close_blinking_time = current_close_blinking_time;
+        }
+      }
+     }
+  }
+  else{
+    if (state->close_switch_state) digitalWrite(CLOSE_LAMP_PIN, HIGH);
+    else digitalWrite(CLOSE_LAMP_PIN, LOW);
+  }
+
+  if(state->seal_light_blinking){
+    current_seal_blinking_time = millis();
+    if(current_seal_blinking_time > state->seal_light_blinking_timeout){
+     state->seal_light_blinking = false; 
+    }
+    else{
+     if (current_seal_blinking_time - previous_seal_blinking_time >= blinking_frequency){
+       if (previous_seal_blinking_state == HIGH){
+         digitalWrite(SEAL_LAMP_PIN, LOW);
+         previous_seal_blinking_state = LOW;
+         previous_seal_blinking_time = current_seal_blinking_time;
+       }
+       else{
+         digitalWrite(SEAL_LAMP_PIN, HIGH);
+         previous_seal_blinking_state = HIGH;
+         previous_seal_blinking_time = current_seal_blinking_time;
+       }
+     }
+    }
+    }
+    else{
+      if (state->seal_switch_state) digitalWrite(SEAL_LAMP_PIN, HIGH);
+      else digitalWrite(SEAL_LAMP_PIN, LOW);
+    }
+
+  
+  if(state->unseal_light_blinking){
+    current_unseal_blinking_time = millis();
+    if(current_unseal_blinking_time > state->unseal_light_blinking_timeout){
+     state->unseal_light_blinking = false; 
+    }
+    else{
+     if (current_unseal_blinking_time - previous_unseal_blinking_time >= blinking_frequency){
+       if (previous_unseal_blinking_state == HIGH){
+         digitalWrite(UNSEAL_LAMP_PIN, LOW);
+         previous_unseal_blinking_state = LOW;
+         previous_unseal_blinking_time = current_unseal_blinking_time;
+       }
+       else{
+         digitalWrite(UNSEAL_LAMP_PIN, HIGH);
+         previous_unseal_blinking_state = HIGH;
+         previous_unseal_blinking_time = current_unseal_blinking_time;
+       }
+     }
+    }
+    }
+    else{
+      if (state->unseal_switch_state) digitalWrite(UNSEAL_LAMP_PIN, HIGH);
+      else digitalWrite(UNSEAL_LAMP_PIN, LOW);
+    }    
+}
+
+
+void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[6]) {
   switch (scen_context->scenario_state)
   {
     case (CHECK_CLOSED):
@@ -447,6 +618,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_SEALED;
       break;
     case (WORK_UNSEALED):
+      if (state->unseal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -463,6 +635,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_FROM_UNSEAL;
       break;
     case (WORK_FROM_UNSEAL):
+      if (!state->unseal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -479,6 +652,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_CLOSED;
       break;
     case (WORK_CLOSED):
+      if (state->close_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -497,6 +671,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       break;
       } 
     case (WORK_UNCLOSE):
+      if (state->unclose_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -513,6 +688,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_SEALED;
       break;
     case (WORK_SEALED):
+      if (state->seal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -529,6 +705,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_FROM_SEAL;
       break;
     case (WORK_FROM_SEAL):
+      if (!state->seal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -545,6 +722,8 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_type = LAST_SCENARIO;
       scen_context->active = false;
       state->seal_button_state = false;
+      state->seal_light_blinking = true;
+      state->seal_light_blinking_timeout = millis() + blinking_duration;
       break;
     case (LAST_SC_STATE):
       break;
@@ -553,7 +732,7 @@ void scenario_sealing(Prim_Context* prim_context, Scen_Context* scen_context, St
   }
 }
 
-void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
+void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[6]) {
   int prim_result;
   switch (scen_context->scenario_state)
   {
@@ -569,6 +748,7 @@ void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, 
       scen_context->scenario_state = WORK_SEALED;
       break;
     case (WORK_UNSEALED):
+      if (state->unseal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -587,6 +767,7 @@ void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, 
       scen_context->scenario_state = WORK_FROM_UNSEAL;
       break;
     case (WORK_FROM_UNSEAL):
+      if (!state->unseal_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -603,6 +784,8 @@ void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, 
       scen_context->scenario_type = LAST_SCENARIO;
       scen_context->active = false;
       state->unseal_button_state = false;
+      state->unseal_light_blinking = true;
+      state->unseal_light_blinking_timeout = millis() + blinking_duration;
       break;
     case (LAST_SC_STATE):
       break;
@@ -610,7 +793,7 @@ void scenario_unsealing(Prim_Context* prim_context, Scen_Context* scen_context, 
       break;
   }
 }
-void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[3]) {
+void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[6]) {
 
   switch (scen_context->scenario_state)
   {
@@ -625,6 +808,7 @@ void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = WORK_CLOSED;
       break;
     case (WORK_CLOSED):
+      if (state->close_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -643,6 +827,7 @@ void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, St
       break;
       } 
     case (WORK_UNCLOSE):
+      if (state->unclose_switch_state) prim_context->prim_state = STOPPED;
       switch (prim_context->prim_state)
       {
         case STOPPED: //отработка аварии выполнения примитива
@@ -658,7 +843,42 @@ void scenario_closing(Prim_Context* prim_context, Scen_Context* scen_context, St
       scen_context->scenario_state = LAST_SC_STATE;
       scen_context->scenario_type = LAST_SCENARIO;
       scen_context->active = false;
-      state->close_button_state = false;
+      state->close_light_blinking = true;
+      state->close_light_blinking_timeout = millis() + blinking_duration;
+      break;
+    case (LAST_SC_STATE):
+      break;
+    default:
+      break;
+  }
+}
+
+void scenario_starup(Prim_Context* prim_context, Scen_Context* scen_context, State* state, Movement movements[6]){
+  switch (scen_context->scenario_state)
+  {
+    case (INIT_UNCLOSE):
+      {
+      init_primitive(prim_context, &movements[3]);
+      scen_context->scenario_state = WORK_UNCLOSE;
+      break;
+      } 
+    case (WORK_UNCLOSE):
+      if (state->unclose_switch_state) prim_context->prim_state = STOPPED;
+      switch (prim_context->prim_state)
+      {
+        case STOPPED: //отработка аварии выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        case SUCCESS: //отработка успеха выполнения примитива
+          scen_context->scenario_state = SCENARIO_EXIT;
+          break;
+        default:
+          break;
+      }  
+    case (SCENARIO_EXIT):
+      scen_context->scenario_state = LAST_SC_STATE;
+      scen_context->scenario_type = LAST_SCENARIO;
+      scen_context->active = false;
       break;
     case (LAST_SC_STATE):
       break;
@@ -680,16 +900,22 @@ Events events;
 
 
 void setup() {
-
-  scen_context.scenario_type = LAST_SCENARIO;
-  scen_context.scenario_state = LAST_SC_STATE;
+  events.button_close_event = LOW;
+  events.button_unseal_event = LOW;
+  events.button_seal_event = LOW;
+  events.button_stop_event = LOW;
+  events.switch_close_event = LOW;
+  events.switch_unclose_event = LOW;
+  events.switch_seal_event = LOW;
+  events.switch_unseal_event = LOW;
 
   Serial.begin(9600);
   //define pin modes
 
   //При запуске вернуть двигатель закрытия в начальное положение
-
-  
+  scen_context.scenario_type = STARTUP;
+  scen_context.scenario_state = INIT_UNCLOSE;
+  scen_context.active = true;
 
 }
 
@@ -704,8 +930,8 @@ void loop() {
 
   //обзвон кнопок и свичей. buttons_processing инициализирует сценарий при записи состояния кнопки в state
   buttons_processing(&state, &events, scen_context.active);
+  indication (&state);
 
-  //TODO добавить функцию приведения состояния лампочек в соответствие state
 
   vel_accel(&prim_context);
 
@@ -714,6 +940,9 @@ void loop() {
   if (scen_context.active) {
     switch (scen_context.scenario_type)
     {
+    case (STARTUP):
+      scenario_starup(&prim_context, &scen_context, &state, movements);
+      break;
     case (CLOSING):
       scenario_closing(&prim_context, &scen_context, &state, movements);
       break;
